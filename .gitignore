@@ -1,0 +1,8 @@
+# Downloaded source data for the build scripts (large; fetched from the cited archives).
+source_data/
+
+# Local cache of sim-derived planet positions/GMs (regenerable; machine-specific).
+.sim_data_cache.json
+
+# Python bytecode cache.
+__pycache__/
