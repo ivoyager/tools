@@ -335,6 +335,18 @@ def face_size_for(source_width):
     return 1 << (max(4, source_width // 4) - 1).bit_length()
 
 
+def resolve_face_size(source_width, face_size, max_size):
+    """Effective cube face edge: the explicit --face-size if given, else the automatic
+    face_size_for(source_width), then capped at max_size (0/None = uncapped). --max-size lets
+    a project bake cubemaps smaller than the source resolution would give; it is validated a
+    power of two in main() and face_size_for() only ever returns one, so the result is a power
+    of two unless --face-size forced otherwise (which bake_channel already warns about)."""
+    size = face_size or face_size_for(source_width)
+    if max_size:
+        size = min(size, max_size)
+    return size
+
+
 def bake_channel(name, tag, equirect_path, size, supersample, flip_v, layout, out_dir,
                  sign_east, sign_north, residual_scale=1.0):
     """Bake one channel of one body to a face strip + .import in out_dir. `name` is the
@@ -422,6 +434,10 @@ def main():
                         help="cube face edge; default is the power of two at or above"
                              " source_width/4 per channel. A non-power-of-two is upscaled"
                              " at import, so it buys nothing -- see face_size_for()")
+    parser.add_argument("--max-size", type=int, default=None,
+                        help="cap the per-channel face size at this power of two, to bake"
+                             " cubemaps smaller than the source resolution would give"
+                             " (default: uncapped). Ignored by --retile and --debug-cube")
     parser.add_argument("--supersample", type=int, default=4,
                         help="per-face oversample before area-averaging (anti-aliases the pole faces)")
     parser.add_argument("--layout", choices=list(LAYOUTS), default="3x2")
@@ -440,6 +456,9 @@ def main():
                         help="emit a labeled 6-face calibration cube instead of a body map")
     parser.add_argument("--out-dir", default=None)
     args = parser.parse_args()
+
+    if args.max_size is not None and (args.max_size < 1 or args.max_size & (args.max_size - 1)):
+        sys.exit(f"--max-size must be a power of two, got {args.max_size}")
 
     out_dir = Path(args.out_dir) if args.out_dir else Path("addons/ivoyager_assets/cubemaps")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -469,7 +488,7 @@ def main():
             print(f"{name}: {', '.join(sorted(channels))}")
             for tag in sorted(channels):
                 width = Image.open(channels[tag]).size[0]
-                size = args.face_size or face_size_for(width)
+                size = resolve_face_size(width, args.face_size, args.max_size)
                 bake_channel(name, tag, channels[tag], size, args.supersample, args.flip_v,
                              args.layout, out_dir, args.normal_sign_east, args.normal_sign_north,
                              args.normal_residual_scale)
@@ -485,7 +504,7 @@ def main():
         if not equirect_path:
             continue
         width = Image.open(equirect_path).size[0]
-        size = args.face_size or face_size_for(width)
+        size = resolve_face_size(width, args.face_size, args.max_size)
         bake_channel(args.name, tag, equirect_path, size, args.supersample, args.flip_v,
                      args.layout, out_dir, args.normal_sign_east, args.normal_sign_north,
                      args.normal_residual_scale)
