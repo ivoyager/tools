@@ -101,11 +101,30 @@ def face_dir(face, u, v):
     return d / np.linalg.norm(d, axis=-1, keepdims=True)
 
 
-def dir_to_lonlat(d):
+def dir_to_lonlat(d, oblate_ratio=1.0):
     """Mesh-local direction [...,3] -> (lon01 wrapping, lat01 in [0,1], 0=north),
-    the inverse of Godot SphereMesh's UV unwrap."""
+    the inverse of Godot SphereMesh's UV unwrap.
+
+    `oblate_ratio` converts the latitude the ENGINE presents into the latitude the
+    SOURCE MAP is drawn in. It is needed because a body's oblateness is not in its
+    mesh: the engine builds a unit SphereMesh and flattens it with a node scale, so
+    both the equirect shader's UV.y and the cube shader's normalize(VERTEX) are
+    linear in the *parametric* (reduced) latitude of the unflattened sphere --
+    neither the planetographic latitude most published maps use nor the
+    planetocentric latitude a PDS product usually carries.
+
+    Pass a/b to sample a planetographic map, b/a to sample a planetocentric one,
+    and leave it 1.0 for a map already in parametric latitude (or a body round
+    enough not to care). Worth up to 3.1 deg on Saturn and 2.0 deg on Jupiter;
+    under 0.2 deg on Earth and Mars.
+    """
     lon01 = (np.arctan2(d[..., 0], d[..., 2]) / TAU) % 1.0
     lat01 = np.arccos(np.clip(d[..., 1], -1.0, 1.0)) / math.pi
+    if oblate_ratio != 1.0:
+        latitude = (0.5 - lat01) * math.pi
+        with np.errstate(invalid="ignore"):
+            latitude = np.arctan(np.tan(latitude) * oblate_ratio)
+        lat01 = 0.5 - latitude / math.pi
     return lon01, lat01
 
 
@@ -155,16 +174,17 @@ def sample_equirect(img, lon01, lat01):
     return np.stack(channels, -1)
 
 
-def bake_color_face(face, size, supersample, flip_v, equirect_rgb):
+def bake_color_face(face, size, supersample, flip_v, equirect_rgb, oblate_ratio=1.0):
     """One color face (albedo/roughness/emission): reproject + supersample +
     area-average. Returns [size,size,3] in [0,255]."""
     directions = face_texel_grid(face, size, supersample, flip_v)
-    lon01, lat01 = dir_to_lonlat(directions)
+    lon01, lat01 = dir_to_lonlat(directions, oblate_ratio)
     hires = sample_equirect(equirect_rgb, lon01, lat01)
     return area_downsample(hires, supersample)
 
 
-def bake_normal_face(face, size, supersample, flip_v, equirect_normal, sign_east, sign_north):
+def bake_normal_face(face, size, supersample, flip_v, equirect_normal, sign_east, sign_north,
+                     oblate_ratio=1.0):
     """One object-space (unit-sphere/mesh-space) normal face, returned as the RESIDUAL
     from the texel's own sphere direction (caller scales and encodes it).
 
@@ -348,7 +368,7 @@ def resolve_face_size(source_width, face_size, max_size):
 
 
 def bake_channel(name, tag, equirect_path, size, supersample, flip_v, layout, out_dir,
-                 sign_east, sign_north, residual_scale=1.0):
+                 sign_east, sign_north, residual_scale=1.0, oblate_ratio=1.0):
     """Bake one channel of one body to a face strip + .import in out_dir. `name` is the
     file prefix INCLUDING any shell token, e.g. "Earth" or "Earth.clouds"."""
     # face_size_for() never returns a non-power-of-two, so only --face-size reaches this.
@@ -360,7 +380,8 @@ def bake_channel(name, tag, equirect_path, size, supersample, flip_v, layout, ou
     # component through the rotate-and-renormalize path that has no meaning there.
     equirect = load_equirect(equirect_path, keep_alpha=tag != "normal")
     if tag == "normal":
-        faces = [bake_normal_face(f, size, supersample, flip_v, equirect, sign_east, sign_north)
+        faces = [bake_normal_face(f, size, supersample, flip_v, equirect, sign_east, sign_north,
+                                  oblate_ratio)
                  for f in range(6)]
         peak = max(float(np.abs(face).max()) for face in faces)
         # The shader multiplies the decoded residual by this same scale, so the two must
@@ -374,7 +395,8 @@ def bake_channel(name, tag, equirect_path, size, supersample, flip_v, layout, ou
         strip = arrange_strip(faces, layout) * 255.0
         linear = True
     else:
-        faces = [bake_color_face(f, size, supersample, flip_v, equirect) for f in range(6)]
+        faces = [bake_color_face(f, size, supersample, flip_v, equirect, oblate_ratio)
+                 for f in range(6)]
         strip = arrange_strip(faces, layout)
         linear = COLOR_CHANNELS[tag]
     out_path = out_dir / f"{name}.{tag}.{size}.png"
@@ -454,8 +476,37 @@ def main():
     parser.add_argument("--normal-sign-north", type=int, choices=[1, -1], default=1)
     parser.add_argument("--debug-cube", action="store_true",
                         help="emit a labeled 6-face calibration cube instead of a body map")
+    parser.add_argument("--source-latitude", choices=["parametric", "planetocentric",
+                                                      "planetographic"], default="parametric",
+                        help="Latitude convention the SOURCE map is drawn in. The engine"
+                             " indexes PARAMETRIC latitude, because oblateness is a node"
+                             " scale on a unit SphereMesh rather than mesh geometry -- so"
+                             " a planetographic or planetocentric map of an oblate body"
+                             " needs converting or its bands land wrong (Saturn 3.1 deg,"
+                             " Jupiter 2.0). Requires --oblate-axes.")
+    parser.add_argument("--oblate-axes", type=float, nargs=2, metavar=("EQUATORIAL", "POLAR"),
+                        help="Body's equatorial and polar radii, any consistent unit. Only"
+                             " their ratio is used. Note the engine derives its polar radius"
+                             " as 3*m_radius - 2*e_radius, which may differ from the table's"
+                             " own polar_radius; match the engine.")
     parser.add_argument("--out-dir", default=None)
     args = parser.parse_args()
+
+    oblate_ratio = 1.0
+    if args.source_latitude != "parametric":
+        if not args.oblate_axes:
+            parser.error("--source-latitude needs --oblate-axes EQUATORIAL POLAR")
+        equatorial, polar = args.oblate_axes
+        ratio = equatorial / polar
+        # A surface point the engine presents at parametric latitude t sits at
+        # planetocentric atan(tan(t)*b/a) and planetographic atan(tan(t)*a/b). The
+        # sampler needs the SOURCE's latitude for that point, so the multiplier is
+        # b/a for a planetocentric map and a/b for a planetographic one. Getting
+        # this backwards is silent and doubles the error rather than removing it.
+        oblate_ratio = ratio if args.source_latitude == "planetographic" else 1.0 / ratio
+        shift = math.degrees(math.atan(max(ratio, 1.0 / ratio)) - math.pi / 4)
+        print(f"latitude: source is {args.source_latitude}, engine is parametric;"
+              f" a/b = {ratio:.5f}, max shift {shift:.2f} deg")
 
     if args.max_size is not None and (args.max_size < 1 or args.max_size & (args.max_size - 1)):
         sys.exit(f"--max-size must be a power of two, got {args.max_size}")
@@ -491,7 +542,7 @@ def main():
                 size = resolve_face_size(width, args.face_size, args.max_size)
                 bake_channel(name, tag, channels[tag], size, args.supersample, args.flip_v,
                              args.layout, out_dir, args.normal_sign_east, args.normal_sign_north,
-                             args.normal_residual_scale)
+                             args.normal_residual_scale, oblate_ratio)
         return
 
     if not args.name:
@@ -507,7 +558,7 @@ def main():
         size = resolve_face_size(width, args.face_size, args.max_size)
         bake_channel(args.name, tag, equirect_path, size, args.supersample, args.flip_v,
                      args.layout, out_dir, args.normal_sign_east, args.normal_sign_north,
-                     args.normal_residual_scale)
+                     args.normal_residual_scale, oblate_ratio)
 
 
 if __name__ == "__main__":
