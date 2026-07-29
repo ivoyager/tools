@@ -5,8 +5,9 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 # *****************************************************************************
 """Build an ivoyager body model (.glb) from a measured vertex-facet shape model
-(Gaskell stereophotoclinometry, PDS '..._ver###q.tab'), for genuinely irregular
-bodies where no DEM/displaced-sphere applies (e.g. Phoebe).
+(stereophotoclinometry: PDS Gaskell '..._ver###q.tab' via --tab, or a triangle
+.obj via --obj as JHU/APL's SBMT distributes them), for genuinely irregular
+bodies where no DEM/displaced-sphere applies (e.g. Phoebe, Phobos, Deimos).
 
 Each shape vertex is in a body-fixed Cartesian frame (X=lon 0, Y=lon 90E, Z=north).
 We place every vertex by its own (longitude, latitude, radius) using the SAME
@@ -43,11 +44,33 @@ def read_gaskell_ver_tab(path):
     return verts, faces - 1  # 1-based -> 0-based
 
 
+def read_obj(path):
+    """Parse a triangle .obj shape model. Returns (vertices_km[N,3], faces0[M,3]).
+
+    Only 'v' and 'f' are read; an SPC shape carries no UVs or normals of its own.
+    A negative face index is relative to the vertices seen so far, so resolving it
+    means knowing the count at that line -- these files never use the form, and
+    silently mis-resolving it would corrupt the mesh, so it is rejected.
+    """
+    verts, faces = [], []
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("v "):
+            verts.append(line.split()[1:4])
+        elif line.startswith("f "):
+            faces.append([f.split("/")[0] for f in line.split()[1:4]])
+    faces = np.array(faces, dtype=np.int64)
+    if faces.size and faces.min() < 1:
+        raise ValueError(f"{path}: relative (negative) face indices are not supported")
+    return np.array(verts, dtype=np.float64), faces - 1
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--name", required=True, help="Body file prefix, e.g. Phoebe")
-    p.add_argument("--tab", required=True, help="Gaskell vertex-facet .tab")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--tab", help="Gaskell vertex-facet .tab")
+    source.add_argument("--obj", help="Triangle .obj shape model, vertices in km")
     p.add_argument("--albedo", help="Equirectangular albedo to embed")
     p.add_argument("--lon-offset-deg", type=float, default=0.0)
     p.add_argument("--flip-u", action="store_true")
@@ -57,7 +80,7 @@ def main():
     p.add_argument("--out-dir", default=None)
     args = p.parse_args()
 
-    verts, faces = read_gaskell_ver_tab(args.tab)
+    verts, faces = read_gaskell_ver_tab(args.tab) if args.tab else read_obj(args.obj)
     print(f"loaded {len(verts)} vertices, {len(faces)} plates")
 
     # body-fixed -> per-vertex longitude/latitude/radius
