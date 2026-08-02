@@ -308,7 +308,7 @@ def save_strip(strip, out_path, layout, linear, is_normal):
     resolves alpha worse. Object-space normals take BC7 for their own reason (BC1's
     5:6:5 bands them), so the two cases share the flag."""
     has_alpha = strip.shape[2] == 4
-    Image.fromarray(np.clip(strip, 0, 255).astype(np.uint8),
+    Image.fromarray(np.round(np.clip(strip, 0, 255)).astype(np.uint8),
                     "RGBA" if has_alpha else "RGB").save(out_path)
     write_import(out_path, layout, linear, is_normal or has_alpha)
 
