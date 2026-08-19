@@ -11,7 +11,7 @@ Every script carries its own specification in its module docstring — data sour
 - **Run from the project directory** (the one holding `project.godot`): `python addons/tools/<script>.py ...`.
 - **Sibling submodules a pipeline needs.** The trajectory scripts need `addons/ivoyager_core` (the tables they write into), and — for `verify_trajectory.py` and `horizons_trajectory.py --pre-fix` — `addons/ivoyager_assistant`, to drive the running sim; `verify_trajectory.py` won't even import without it. The asset builders need `addons/ivoyager_assets` unless given `--out-dir`.
 - **Outputs** go to `addons/ivoyager_assets/` (`models/`, `maps/`, `starmaps/`) or to the Core plugin's `tables/`. The assets directory is not Git-tracked in any project — the editor plugin downloads it — so a regenerated asset reaches other people only through an [asset_downloads](https://github.com/ivoyager/asset_downloads) release.
-- **A generated asset needs an attribution entry**, in `IVOYAGER_WORKS.md` (our original work, plus the public-domain source data it derives from) or `3RD_PARTY.md` (third-party files). Both are mastered in the asset_downloads repo.
+- **A generated asset needs an attribution entry** in `IVOYAGER_ASSETS.md` — what it is, what it was made from, and its own copyright and license — plus a listing in `3RD_PARTY.md` if any of its content is third-party. Both are mastered in the asset_downloads repo.
 - **Downloaded source data** belongs in `source_data/` here (Git-ignored); each script's docstring cites the archive to fetch it from.
 - **Dependencies:** the trajectory scripts are stdlib-only. The asset builders need `numpy`, `Pillow`, `tifffile`, and `pygltflib` (the `.glb` writers).
 - **After writing a `.tsv` or a new asset, refresh imports before launching:** `<godot-console> --path . --import --headless`. Headless runs use cached table data and silently ignore un-reimported edits. Godot keys reimport on the source's md5, so a regenerate that reproduces identical bytes is correctly a no-op (mtime is not consulted). Note that `--editor --headless --quit` quits *before* the async import scan completes — use `--import`, which waits for imports then exits.
@@ -32,7 +32,7 @@ Patched-conic trajectory data for real craft (Voyager 1 & 2, Pioneer 10, Juno, N
 
 `make_iapetus_dem.py` synthesizes an idealized Iapetus DEM (the fossil bulge and equatorial ridge) to feed that script, since no measured global DEM of Iapetus exists. It is **not** measured topography — see its docstring for what it does and does not claim.
 
-Per-body sources for real DEMs are cited in `IVOYAGER_WORKS.md`.
+Per-body sources for real DEMs are cited in `IVOYAGER_ASSETS.md`.
 
 ## Body models from a measured shape model
 
