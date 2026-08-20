@@ -11,12 +11,22 @@ model drops into ivoyager at model_scale = 1000 m, exactly like the existing
 NASA-derived models, e.g. Mimas.1_1000.glb), with the albedo and a DEM-derived
 tangent-space normal map embedded in the glb material.
 
-Frame conventions (matched to ivoyager_core):
-  - Mesh authored Y-up (north pole = +Y). IVBodyVisual applies rotX(+90 deg),
-    sending +Y -> +Z (the engine's north). See body_visual.gd.
-  - The generic spheroid additionally gets rotY(-90 deg - map_offset); we bake
-    that same longitude rotation into the mesh so a built model reproduces the
-    known-correct spheroid orientation. map_offset defaults to 0.
+Frame conventions (matched to ivoyager_core; frames unified 2026-08-20):
+  - The mesh is the displaced SphereMesh: authored Y-up (north pole = +Y), with
+    texture u placed exactly where Godot's SphereMesh UV-unwraps it -- direction
+    (sin(TAU u), ., cos(TAU u)), i.e. phi0 = pi/2 with u_dir = -1. IVBodyVisual
+    applies the identical basis to a mesh body as to the generic spheroid
+    (rotY(-90 deg) then rotX(+90 deg)), so a built model and the shared sphere
+    are interchangeable: same maps, same registration, no offsets.
+  - The DEM and albedo must be CENTRED on the prime meridian (u = 0.5 ->
+    longitude 0), the standard published convention and the only one the engine
+    accepts since map_offset was retired; roll a left-edge (0-360 east from
+    column 0) master by half its width first.
+  - History: until 2026-08-19 u ran the wrong way (u_dir defaulted +1), rendering
+    every mesh body mirrored -- on a tidally locked body that shows as a landmark
+    on the wrong side of the sub-parent point; until 2026-08-20 the frame sat
+    90 deg from the SphereMesh's, with --map-offset-deg baking in the engine
+    rotation the mesh branch then lacked.
   - Albedo and DEM are both sampled by the same horizontal UV (u -> longitude),
     so displacement always aligns with the albedo regardless of the geometric
     seam; only the body's physical longitude depends on the seam (verify in-app).
@@ -187,6 +197,11 @@ def build_mesh(dem, ref_radius_km, vert_unit_km, add_km,
     # back-face culling keeps the outer surface and computed normals point out.
     faces = np.concatenate([np.stack([i0, i3, i2], -1),
                             np.stack([i0, i1, i3], -1)], 0)
+    # u_dir = -1 runs longitude the other way round the grid, flipping its handedness;
+    # a mesh wound inward is back-face culled away to nothing.
+    a, b, c = pos[faces[:, 0]], pos[faces[:, 1]], pos[faces[:, 2]]
+    if np.einsum("ij,ij->i", a, np.cross(b, c)).sum() < 0:
+        faces = faces[:, ::-1].copy()
     a, b, c = pos[faces[:, 0]], pos[faces[:, 1]], pos[faces[:, 2]]
     area = np.linalg.norm(np.cross(b - a, c - a), axis=1)
     faces = faces[area > 1e-9]
@@ -318,8 +333,9 @@ def main():
                    help="fill unimaged (nodata) albedo regions with a uniform grey = mean of imaged pixels")
     p.add_argument("--metallic", type=float, default=0.0)
     p.add_argument("--roughness", type=float, default=0.9)
-    p.add_argument("--map-offset-deg", type=float, default=0.0)
-    p.add_argument("--u-dir", type=int, choices=[1, -1], default=1)
+    p.add_argument("--u-dir", type=int, choices=[1, -1], default=-1,
+                   help="longitude sense; -1 is correct (see the frame conventions above), "
+                        "+1 reproduces the pre-2026-08-19 mirrored meshes")
     p.add_argument("--invert-normal-y", action="store_true")
     p.add_argument("--model-scale", type=int, default=1000,
                    help="for filename Name.1_<N>.glb and the file_adjustments row (m)")
@@ -344,7 +360,7 @@ def main():
             dem = np.maximum(dem, clamp_dn)
             print(f"  clamped to >= {args.clamp_min_m} m -> DN range [{dem.min():.0f}, {dem.max():.0f}]")
 
-    phi0 = math.pi - math.radians(args.map_offset_deg)
+    phi0 = math.pi / 2  # the SphereMesh frame (see Frame conventions above)
     content = args.normal_content
     if content == "auto":
         content = "detail" if args.mode == "mesh" else "full"
@@ -411,7 +427,7 @@ def main():
     mb = out_glb.stat().st_size / 1048576
     print(f"\nwrote {out_glb}  ({mb:.1f} MB)")
     print("\nAdd this row to addons/ivoyager_core/tables/file_adjustments.tsv:")
-    print(f"\t{out_glb.name}\t\t{args.model_scale}\t")
+    print(f"\t{out_glb.name}\t{args.model_scale}\t")
 
 
 if __name__ == "__main__":

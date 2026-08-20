@@ -26,7 +26,7 @@ in the assets directory as inspectable, repairable source; exports carry only th
 compressed cubemap.
 
 Frame conventions (matched to the shared Godot SphereMesh the spheroid bodies use,
-so reference_basis and map_offset carry over unchanged -- only the sampling method
+so reference_basis carries over unchanged -- only the sampling method
 differs from the equirect path):
   - The shader samples texture(cube, normalize(VERTEX)) where VERTEX is the unit
     SphereMesh local position. SphereMesh places north at +Y with
