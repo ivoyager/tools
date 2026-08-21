@@ -56,6 +56,10 @@ Two names are load-bearing and were both established empirically, so don't "corr
 
 `unwrap_cubemap.py` does the reverse (cubemap strip → equirectangular), optionally rotated 90° so the poles land on the equator — a diagnostic for telling baked-in source-data polar defects (which survive the rotation, showing at the well-sampled equator) from equirect projection artifacts (which the cubemap removes).
 
+## Body 2D icons
+
+`capture_body_icons.py` renders the `bodies_2d/` icon set — the flat images a GUI shows for a body — by launching the project and staging each body through `IVBody.make_body_visual()` into an off-screen rig, so an icon is the body *as the simulator draws it*: cube shaders, cloud and limb shells, band-pattern bodies and packed spacecraft models all come through with no special handling. Its in-sim half is `body_2d_icon_suite.gd`, reached over the `ivoyager_assistant` TCP server; the script registers it in `ivoyager_override2.cfg` for the run and restores the file afterwards, so it needs **both** `addons/ivoyager_core` and `addons/ivoyager_assistant` present. Two conventions carry the work: a pose is a **sub-camera longitude and latitude** rather than a turntable angle, so it survives a re-bake or a change of map registration and can be checked against a published landmark; and lighting is the engine's own physical sunlight with its compensating camera, one directional source at `metering_key / albedo`, so nothing needs per-body brightness tuning. The pose table is a project file passed with `--specs` (which face of a body is interesting is a project's decision, not a tool default); its columns, and the `roll auto` diagonal fit for elongated bodies, are documented in the script's docstring.
+
 ## Star field
 
 `build_star_binaries.py` bakes the ESA Hipparcos Main Catalogue (`hip_main.dat`, VizieR I/239) into the magnitude-binned `.ivbinary` point clouds that `IVStarsVisual` loads on init. Stdlib-only. Its magnitude bin edges must stay matched to `IVStarsVisual.BINARY_FILE_MAGNITUDES`.
