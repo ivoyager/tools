@@ -1,0 +1,4 @@
+# Godot writes LF on every platform, so LF is the only setting that does not churn
+# the files it authors (.gd and its .uid sidecar). The Python here follows the same
+# rule; nothing in this repo is served by a platform-dependent checkout.
+* text=auto eol=lf
