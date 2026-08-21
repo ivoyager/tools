@@ -55,11 +55,11 @@ takes the default):
     roll          screen rotation, degrees counter-clockwise, or `auto`
                   to lay the silhouette's long axis on the lower-left to
                   upper-right diagonal                        [0]
-    camera_radii  camera distance in the body's own camera radii. The default 3 is
-                  VIEW_ZOOM's, which is what makes an icon look like the app --
-                  the projection is perspective and the distance is what sets it,
-                  so raise this only where VIEW_ZOOM is unusable (a spacecraft,
-                  whose table radius is a placeholder)          [3.0]
+    camera_radii  camera distance in the body's own camera radii. The default 6 is
+                  twice VIEW_ZOOM's, which reads as wide-angle on a banded planet;
+                  the projection is perspective and the distance alone sets it, so
+                  lower this only to put a body back on the app's own framing, or
+                  where the reference radius is a placeholder (a spacecraft) [6.0]
     fill          fraction of the frame the rendered body is fitted to; capped
                   at 1, and 0 disables the measured fit entirely  [1.0]
     zoom          multiplies the fitted answer: <1 enlarges and crops (how a
@@ -150,7 +150,7 @@ DEFAULTS = {
     "ev": 0.0,
     "ev_auto": 0.0,
     "clip_limit": 0.01,
-    "camera_radii": 3.0,
+    "camera_radii": 6.0,
     "auto_center": 1.0,
     "exposure": 0.0,
     "ambient": 0.0,

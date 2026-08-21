@@ -57,8 +57,8 @@ const MOMENT_SIZE := 256 ## Silhouette copy the auto-roll axis is measured on.
 const DIAGONAL_ANGLE_DEG := 45.0
 const DEFAULT_ALBEDO := 0.3 ## For a body whose table row has none (every spacecraft).
 const CLIP_LEVEL := 254.5 / 255.0 ## A channel at or above this counts as clipped.
-## Camera distance in target radii — VIEW_ZOOM's own framing, which an icon reproduces so it
-## looks like the app.
+## Camera distance in target radii — twice VIEW_ZOOM's, which is the app framing an icon is
+## derived from.
 ##
 ## The projection has to be PERSPECTIVE for that, and it is not a cosmetic choice: a shader
 ## reading [code]VIEW[/code] gets it from the view-space POSITION, so under an orthographic
@@ -68,13 +68,18 @@ const CLIP_LEVEL := 254.5 / 255.0 ## A channel at or above this counts as clippe
 ## Venus, whose minnaert_k the law applies. Matching the app's projection removes it by
 ## construction, since mu then reaches zero exactly at the drawn silhouette.
 ##
-## Measured back out of the app rather than read off the table: at focal length 24 mm
-## (vertical fov 51.86 deg, Godot's KEEP_HEIGHT) a VIEW_ZOOM screenshot puts Mars' disc at an
-## angular radius of 19.50 deg, i.e. 3.00 radii; Venus 2.97, Earth 3.11 (its limb shell
+## VIEW_ZOOM was measured back out of the app rather than read off the table: at focal length
+## 24 mm (vertical fov 51.86 deg, Godot's KEEP_HEIGHT) a VIEW_ZOOM screenshot puts Mars' disc
+## at an angular radius of 19.50 deg, i.e. 3.00 radii; Venus 2.97, Earth 3.11 (its limb shell
 ## inflates the measured disc). That agrees with views.tsv's view_position_z of 3.
-const VIEW_ZOOM_RADII := 3.0
-## Focal length the app defaults to, in 35 mm-equivalent mm. Only the DISTANCE above sets the
-## perspective; narrowing the fov from here to frame the icon is a pure crop.
+##
+## Icons are shot from TWICE that, because VIEW_ZOOM reads as wide-angle on a banded planet:
+## at 3 radii a feature only 14 deg off the centre meridian already sits a third of the way
+## out to the limb, which bulges Jupiter. 6 radii takes the same offset to 16.5 deg.
+const VIEW_ZOOM_RADII := 6.0
+## Focal length the app defaults to, in 35 mm-equivalent mm. Kept for the derivation above and
+## nothing else: the fov below is solved to FRAME the body, so the focal length cancels out of
+## the icon entirely and the distance alone sets the perspective.
 const VIEW_ZOOM_FOCAL_LENGTH := 24.0
 
 var _capturer: IVBody2DCapturer
@@ -248,6 +253,10 @@ func _run_capture(body_name: StringName, params: Dictionary) -> void:
 		reference_radius = bound
 	_view_distance = maxf(reference_radius * _read_float(params, "camera_radii",
 			VIEW_ZOOM_RADII), bound * 1.05)
+	# The rig replaces the capturer's camera with a perspective one at its own distance, so a
+	# star's disc has to be rescaled to it. Skipping this leaves the photosphere's alias fades
+	# resolving against the staging camera and the Sun renders as a flat disc.
+	visual.set_preview_camera_distance(_view_distance)
 	bound = minf(bound, _view_distance * 0.999)
 	_view_tangent = bound / sqrt(maxf(_view_distance * _view_distance - bound * bound, 1e-12))
 	var longitude := _read_float(params, "longitude", 0.0)
