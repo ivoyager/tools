@@ -10,12 +10,23 @@
 bodies where no DEM/displaced-sphere applies (e.g. Phoebe, Phobos, Deimos).
 
 Each shape vertex is in a body-fixed Cartesian frame (X=lon 0, Y=lon 90E, Z=north).
-We place every vertex by its own (longitude, latitude, radius) using the SAME
-authoring convention as build_body_model.py's DEM meshes, so the result lines up
-with the engine's spheroid/DEM bodies and the equirectangular albedo (sampled by
-the same longitude). Winding is forced outward; the albedo is embedded; no normal
-map (the mesh carries all relief). --lon-offset-deg / --flip-u are escape hatches
-to match an albedo whose longitude origin/handedness differs (verify in-engine).
+We place every vertex by its own (longitude, latitude, radius) as the displaced
+SphereMesh: north -> +Y and phi = -lon - pi/2, the direction where Godot's
+SphereMesh carries that longitude's texture u, with the UV that same unwrap,
+u = (lon - 180)/360. IVBodyVisual applies the identical basis to a mesh body as to
+the generic spheroid (rotY(-90 deg) then rotX(+90 deg)), so every vertex renders
+at its own east longitude -- and the albedo must be CENTRED on the prime meridian
+(the standard published convention; roll a 0-360-from-left-edge sheet by 180
+first). Winding is forced outward; the albedo is embedded; no normal map (the
+mesh carries all relief). --lon-offset-deg / --flip-u are escape hatches to match
+an albedo whose longitude origin/handedness differs (verify in-engine).
+
+phi was `math.pi + lon` until 2026-08-19 -- every SPC body mirrored about the
+sub-parent meridian AND turned 180 deg -- and `-lon` with a left-edge UV until
+2026-08-20, when the engine unified the mesh and spheroid frames. The check:
+recover each built vertex's longitude through the placement's own inverse and
+register the radius field against the source shape over a (lon, sin lat) grid,
+sweeping roll and both handednesses; it must peak at roll 0, unmirrored.
 """
 
 import argparse
@@ -89,19 +100,21 @@ def main():
     lat = np.arcsin(np.clip(z / r, -1.0, 1.0))
     lon = np.arctan2(y, x)  # radians, east-positive
 
-    # place in the engine authoring frame, identical to build_body_model's DEM mesh:
-    # north -> +Y, longitude seam at phi0 = pi (lon 0 -> -X). UV longitude = lon.
-    phi = math.pi + lon + math.radians(args.lon_offset_deg)
+    # place as the displaced SphereMesh: north -> +Y, phi = -lon - pi/2 puts the vertex
+    # at the SphereMesh direction of its own longitude's texture u, and the UV below is
+    # that same unwrap -- the engine's shared spheroid basis then renders lon at lon.
+    phi = -lon - math.pi / 2 + math.radians(args.lon_offset_deg)
     cl = np.cos(lat)
     pos = np.stack([cl * np.cos(phi), np.sin(lat), cl * np.sin(phi)], -1) * r[:, None]
     pos = pos.astype(np.float32)
 
-    u = (np.degrees(lon) % 360.0) / 360.0
+    u = ((np.degrees(lon) - 180.0) % 360.0) / 360.0
     if args.flip_u:
         u = 1.0 - u
     uv = np.stack([u, (math.pi / 2 - lat) / math.pi], -1).astype(np.float32)
 
-    # force outward winding (this placement flips the .tab's handedness)
+    # guard outward winding; this placement is a rotation, so a source already wound
+    # outward stays so (before the phi fix it was a reflection, and did flip)
     a, b, c = pos[faces[:, 0]], pos[faces[:, 1]], pos[faces[:, 2]]
     if np.einsum("ij,ij->i", a.astype(np.float64), np.cross(b, c).astype(np.float64)).sum() < 0:
         faces = faces[:, ::-1].copy()
@@ -128,7 +141,7 @@ def main():
     print(f"verts={len(pos)} faces={len(faces)} extent_km "
           f"X={ext_km[0]:.1f} Y={ext_km[1]:.1f} Z={ext_km[2]:.1f}  "
           f"radius[{r.min():.1f},{r.max():.1f}]  {out_glb.stat().st_size / 1048576:.1f}MB")
-    print(f"\nAdd to file_adjustments.tsv:\n\t{out_glb.name}\t\t{args.model_scale}\t")
+    print(f"\nAdd to file_adjustments.tsv:\n\t{out_glb.name}\t{args.model_scale}\t")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ Every script carries its own specification in its module docstring — data sour
 - **Run from the project directory** (the one holding `project.godot`): `python addons/tools/<script>.py ...`.
 - **Sibling submodules a pipeline needs.** The trajectory scripts need `addons/ivoyager_core` (the tables they write into), and — for `verify_trajectory.py` and `horizons_trajectory.py --pre-fix` — `addons/ivoyager_assistant`, to drive the running sim; `verify_trajectory.py` won't even import without it. The asset builders need `addons/ivoyager_assets` unless given `--out-dir`.
 - **Outputs** go to `addons/ivoyager_assets/` (`models/`, `maps/`, `starmaps/`) or to the Core plugin's `tables/`. The assets directory is not Git-tracked in any project — the editor plugin downloads it — so a regenerated asset reaches other people only through an [asset_downloads](https://github.com/ivoyager/asset_downloads) release.
-- **A generated asset needs an attribution entry**, in `IVOYAGER_WORKS.md` (our original work, plus the public-domain source data it derives from) or `3RD_PARTY.md` (third-party files). Both are mastered in the asset_downloads repo.
+- **A generated asset needs an attribution entry** in `IVOYAGER_ASSETS.md` — what it is, what it was made from, and its own copyright and license — plus a listing in `3RD_PARTY.md` if any of its content is third-party. Both are mastered in the asset_downloads repo.
 - **Downloaded source data** belongs in `source_data/` here (Git-ignored); each script's docstring cites the archive to fetch it from.
 - **Dependencies:** the trajectory scripts are stdlib-only. The asset builders need `numpy`, `Pillow`, `tifffile`, and `pygltflib` (the `.glb` writers).
 - **After writing a `.tsv` or a new asset, refresh imports before launching:** `<godot-console> --path . --import --headless`. Headless runs use cached table data and silently ignore un-reimported edits. Godot keys reimport on the source's md5, so a regenerate that reproduces identical bytes is correctly a no-op (mtime is not consulted). Note that `--editor --headless --quit` quits *before* the async import scan completes — use `--import`, which waits for imports then exits.
@@ -32,7 +32,7 @@ Patched-conic trajectory data for real craft (Voyager 1 & 2, Pioneer 10, Juno, N
 
 `make_iapetus_dem.py` synthesizes an idealized Iapetus DEM (the fossil bulge and equatorial ridge) to feed that script, since no measured global DEM of Iapetus exists. It is **not** measured topography — see its docstring for what it does and does not claim.
 
-Per-body sources for real DEMs are cited in `IVOYAGER_WORKS.md`.
+Per-body sources for real DEMs are cited in `IVOYAGER_ASSETS.md`.
 
 ## Body models from a measured shape model
 
@@ -55,6 +55,10 @@ Two names are load-bearing and were both established empirically, so don't "corr
 **Precedence / coexistence:** the equirect path is unchanged and fully supported. IVAssetPreloader scans `maps/` then `cubemaps/`, so **when a body has both a `maps/` and a `cubemaps/` version of a channel, the cubemap wins.** A project — or body, or single channel — can be all-equirect, all-cube, or mixed, with identical tables; the asset type alone selects the shader.
 
 `unwrap_cubemap.py` does the reverse (cubemap strip → equirectangular), optionally rotated 90° so the poles land on the equator — a diagnostic for telling baked-in source-data polar defects (which survive the rotation, showing at the well-sampled equator) from equirect projection artifacts (which the cubemap removes).
+
+## Body 2D icons
+
+`capture_body_icons.py` renders the `bodies_2d/` icon set — the flat images a GUI shows for a body — by launching the project and staging each body through `IVBody.make_body_visual()` into an off-screen rig, so an icon is the body *as the simulator draws it*: cube shaders, cloud and limb shells, band-pattern bodies and packed spacecraft models all come through with no special handling. Its in-sim half is `body_2d_icon_suite.gd`, reached over the `ivoyager_assistant` TCP server; the script registers it in `ivoyager_override2.cfg` for the run and restores the file afterwards, so it needs **both** `addons/ivoyager_core` and `addons/ivoyager_assistant` present. Two conventions carry the work: a pose is a **sub-camera longitude and latitude** rather than a turntable angle, so it survives a re-bake or a change of map registration and can be checked against a published landmark; and lighting is the engine's own physical sunlight with its compensating camera, one directional source at `metering_key / albedo`, so nothing needs per-body brightness tuning. The pose table is a project file passed with `--specs` (which face of a body is interesting is a project's decision, not a tool default); its columns, and the `roll auto` diagonal fit for elongated bodies, are documented in the script's docstring.
 
 ## Star field
 
