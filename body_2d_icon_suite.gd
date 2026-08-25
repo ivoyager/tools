@@ -97,6 +97,8 @@ var _view_extent := 0.0
 var _view_tangent := 0.0
 var _exposure_manager: Node
 var _exposure_process_mode := Node.PROCESS_MODE_INHERIT
+var _farwarp_manager: Node
+var _farwarp_process_mode := Node.PROCESS_MODE_INHERIT
 var _capture_running := false
 var _capture_result: Dictionary
 
@@ -227,12 +229,10 @@ func _run_capture(body_name: StringName, params: Dictionary) -> void:
 	# direction takes the opposite elevation: a source above shines downward.
 	var key_elevation := deg_to_rad(-_read_float(params, "light_up", -10.0))
 	_capturer.set_key_light(key_azimuth, key_elevation)
-	_set_sun_direction(visual, -IVBody2DCapturer.azimuth_elevation_to_direction(
-			key_azimuth, key_elevation))
 	_capturer.set_brightness(brightness)
 	_capturer.set_ambient(_read_float(params, "ambient", 0.0))
 	_set_environment_ambient(_read_float(params, "env_ambient", 0.0))
-	_hold_self_luminous_scale(_read_float(params, "exposure", 0.0))
+	_hold_render_globals(_read_float(params, "exposure", 0.0))
 
 	# The turntable's own fit can only bound the unrotated box, and the pose here spins the
 	# body under it (see _apply_pose), so frame on the box's diagonal — a bound no rotation
@@ -299,10 +299,13 @@ func _run_capture(body_name: StringName, params: Dictionary) -> void:
 
 	var image := await _render()
 	var report := _measure(image)
+	# Resize first, then convert: the viewport hands back PREMULTIPLIED colour, which is the
+	# only form a filter may average, and a PNG means straight alpha.
 	image.resize(width, height, Image.INTERPOLATE_LANCZOS)
+	IVBody2DCapturer.unpremultiply_alpha(image)
 	var save_error := image.save_png(out_path)
 	_capturer.clear_visual()
-	_release_self_luminous_scale()
+	_release_render_globals()
 	if save_error != OK:
 		_fail("Failed to save %s (error %s)" % [out_path, save_error])
 		return
@@ -355,7 +358,7 @@ func _solve_fill_zoom(bounding_cube: AABB, longitude: float, latitude: float, ro
 	var solved := zoom
 	for _iteration in FIT_ITERATIONS:
 		var image := await _render()
-		var used := image.get_used_rect()
+		var used := IVBody2DCapturer.get_silhouette_rect(image)
 		var fraction := maxf(float(used.size.x) / float(image.get_width()),
 				float(used.size.y) / float(image.get_height()))
 		if fraction <= 0.0:
@@ -369,7 +372,7 @@ func _solve_fill_zoom(bounding_cube: AABB, longitude: float, latitude: float, ro
 func _refine_fill_zoom(bounding_cube: AABB, longitude: float, latitude: float, roll: float,
 		zoom: float, pan: Vector2, fill: float) -> float:
 	var image := await _render()
-	var used := image.get_used_rect()
+	var used := IVBody2DCapturer.get_silhouette_rect(image)
 	var fraction := maxf(float(used.size.x) / float(image.get_width()),
 			float(used.size.y) / float(image.get_height()))
 	if fraction <= 0.0 or fraction >= 0.999 or absf(fraction - fill) < 0.005:
@@ -388,7 +391,7 @@ func _solve_center_pan(bounding_cube: AABB, longitude: float, latitude: float, r
 		zoom: float, pan: Vector2) -> Vector2:
 	_apply_pose(bounding_cube, longitude, latitude, roll, zoom, pan)
 	var image := await _render()
-	var used := image.get_used_rect()
+	var used := IVBody2DCapturer.get_silhouette_rect(image)
 	if used.size.x <= 0 or used.size.y <= 0:
 		return Vector2.ZERO
 	var center := Vector2(used.position) + Vector2(used.size) * 0.5
@@ -461,7 +464,7 @@ func _measure_clip_fraction(image: Image) -> float:
 
 
 func _measure(image: Image) -> Dictionary:
-	var used := image.get_used_rect()
+	var used := IVBody2DCapturer.get_silhouette_rect(image)
 	var covered := 0
 	var sum := Vector3.ZERO
 	var peak := Vector3.ZERO
@@ -486,12 +489,9 @@ func _measure(image: Image) -> Dictionary:
 	}
 
 
-# Hides every shell whose shells.tsv tag is named, LIMB by default. An atmosphere limb is
-# additive glow that is invisible at an icon's exposure, but it draws ALPHA on a transparent
-# background, so what it actually contributes is a ring of near-black opaque texels outside
-# the disc -- a black border, and a silhouette the fill above would then fit to.
+# Hides every shell whose shells.tsv tag is named; nothing by default.
 func _hide_shells_by_tag(body_name: StringName, value: Variant) -> void:
-	var tags: Array = ["LIMB"]
+	var tags: Array = []
 	if typeof(value) == TYPE_ARRAY:
 		tags = value
 	if tags.is_empty():
@@ -525,22 +525,6 @@ func _apply_shell_visibility(value: Variant) -> void:
 	var shells := _get_shells()
 	for index in mini(flags.size(), shells.size()):
 		shells[index].visible = _to_bool(flags[index], true)
-
-
-# The disc-photometry laws (minnaert_k, lunar_lambert) and the ring/eclipse occlusion take
-# the sun from a sun_direction uniform, which IVSunOcclusionManager feeds per frame to the
-# LIVE body's materials only -- a staged visual is a separate node tree the manager never
-# sees, so its uniform sits at the shader default. Feed it the rig's own key light, or a
-# body with a photometric law is shaded against one sun and lit by another.
-# [param toward_sun] is a unit vector in the capture world's space.
-func _set_sun_direction(node: Node, toward_sun: Vector3) -> void:
-	var mesh_instance := node as MeshInstance3D
-	if mesh_instance:
-		var material := mesh_instance.get_surface_override_material(0) as ShaderMaterial
-		if material:
-			material.set_shader_parameter(&"sun_direction", toward_sun)
-	for child in node.get_children():
-		_set_sun_direction(child, toward_sun)
 
 
 func _get_albedo(body: IVBody) -> float:
@@ -605,7 +589,7 @@ func _parse_pan(value: Variant) -> Vector2:
 func _fail(message: String) -> void:
 	if _capturer:
 		_capturer.clear_visual()
-	_release_self_luminous_scale()
+	_release_render_globals()
 	_capture_result = {"_error": {"code": ERR_INVALID_PARAMS, "message": message}}
 	_capture_running = false
 
@@ -654,30 +638,44 @@ func _build_rig(render_size: Vector2i) -> void:
 			_spin_pivot)
 
 
-# Self-luminous output -- a star's photosphere, a body's emission map -- is scaled by
-# rendering-server globals that IVExposureManager rewrites EVERY FRAME from what the app's
-# own camera happens to be metering. An icon that inherited those would depend on where the
-# simulator's camera was parked, so the manager is stopped for the render and the globals
-# pinned: 0.0 (the default) suppresses self-luminous contributions outright, which is what a
-# body lit at near-zero phase wants, and a star sets its own. iv_limb_scale and
+# Rendering-server globals that a manager rewrites EVERY FRAME from what the app's own camera
+# happens to be doing. An icon that inherited one would depend on where the simulator's camera
+# was parked, so each manager is stopped for the render and its global pinned.
+#
+# iv_exposure and iv_emission_luminance_scale scale SELF-LUMINOUS output -- a star's
+# photosphere, a body's emission map: 0.0 (the default) suppresses it outright, which is what
+# a body lit at near-zero phase wants, and a star sets its own. iv_limb_scale and
 # iv_emission_energy_scale are written once at activation, not per frame, so stopping the
-# manager holds them at their live values rather than reverting the limb glow to 50x.
-func _hold_self_luminous_scale(exposure: float) -> void:
+# exposure manager holds them at their live values rather than reverting the limb glow to 50x.
+#
+# iv_farwarp_start is the distance beyond which a vertex is pulled inward, and IVFarwarpManager
+# sets it to the LIVE camera's distance to its own parent x 1e4. The rig stages a body tens of
+# thousands of km from its own camera, so a simulator camera parked close to something small --
+# a spacecraft, whose reference radius is metres -- compresses the whole rig to a fraction of
+# its near plane and the icon renders empty. 0.0 disables the remap, which is what a rig whose
+# geometry all sits at one distance wants.
+func _hold_render_globals(exposure: float) -> void:
 	_exposure_manager = IVGlobal.program.get(&"ExposureManager")
-	if !_exposure_manager:
-		return
-	_exposure_process_mode = _exposure_manager.process_mode
-	_exposure_manager.process_mode = Node.PROCESS_MODE_DISABLED
-	RenderingServer.global_shader_parameter_set(&"iv_exposure", exposure)
-	RenderingServer.global_shader_parameter_set(&"iv_emission_luminance_scale",
-			exposure * IVExposureManager.gain)
+	if _exposure_manager:
+		_exposure_process_mode = _exposure_manager.process_mode
+		_exposure_manager.process_mode = Node.PROCESS_MODE_DISABLED
+		RenderingServer.global_shader_parameter_set(&"iv_exposure", exposure)
+		RenderingServer.global_shader_parameter_set(&"iv_emission_luminance_scale",
+				exposure * IVExposureManager.gain)
+	_farwarp_manager = IVGlobal.program.get(&"FarwarpManager")
+	if _farwarp_manager:
+		_farwarp_process_mode = _farwarp_manager.process_mode
+		_farwarp_manager.process_mode = Node.PROCESS_MODE_DISABLED
+		RenderingServer.global_shader_parameter_set(&"iv_farwarp_start", 0.0)
 
 
-func _release_self_luminous_scale() -> void:
-	if !_exposure_manager:
-		return
-	_exposure_manager.process_mode = _exposure_process_mode
-	_exposure_manager = null
+func _release_render_globals() -> void:
+	if _exposure_manager:
+		_exposure_manager.process_mode = _exposure_process_mode
+		_exposure_manager = null
+	if _farwarp_manager:
+		_farwarp_manager.process_mode = _farwarp_process_mode
+		_farwarp_manager = null
 
 
 # Engine ambient is what reaches a packed craft model, whose StandardMaterial3D takes no
@@ -714,6 +712,6 @@ func _free_rig() -> void:
 	_pitch_pivot = null
 	_spin_pivot = null
 	_world_environment = null
-	_release_self_luminous_scale()
+	_release_render_globals()
 	_capture_running = false
 	_capture_result = {}
