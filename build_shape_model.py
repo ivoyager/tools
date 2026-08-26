@@ -87,7 +87,8 @@ def main():
     p.add_argument("--flip-u", action="store_true")
     p.add_argument("--metallic", type=float, default=0.0)
     p.add_argument("--roughness", type=float, default=0.9)
-    p.add_argument("--model-scale", type=int, default=1000)
+    p.add_argument("--model-scale", type=int, default=1000,
+                   help="metres per model unit; encoded in the filename as Name.1_<N>.glb")
     p.add_argument("--out-dir", default=None)
     args = p.parse_args()
 
@@ -141,7 +142,6 @@ def main():
     print(f"verts={len(pos)} faces={len(faces)} extent_km "
           f"X={ext_km[0]:.1f} Y={ext_km[1]:.1f} Z={ext_km[2]:.1f}  "
           f"radius[{r.min():.1f},{r.max():.1f}]  {out_glb.stat().st_size / 1048576:.1f}MB")
-    print(f"\nAdd to file_adjustments.tsv:\n\t{out_glb.name}\t{args.model_scale}\t")
 
 
 if __name__ == "__main__":
