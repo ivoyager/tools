@@ -87,10 +87,10 @@ takes the default):
                   is right for a body lit at near-zero phase; a star needs its
                   own value                                     [0]
     hide_shells   shells.tsv tags to hide, e.g. `LIMB,CLOUDS`; `-` keeps every
-                  shell. An atmosphere limb is additive glow that an icon's
-                  exposure makes invisible, but it writes alpha, so on a
-                  transparent background it prints a near-black border and the
-                  fill above would fit the body to it       [LIMB]
+                  shell, which is the default. A limb shell was hidden until
+                  2026-08-25, when the premultiplied readback that made it print
+                  a near-black border was fixed; a body whose surface takes its
+                  sunlight THROUGH its air cannot have the air left out anyway  [-]
     shells        per-shell visibility by index, e.g. `1,0,1`; applied after
                   `hide_shells`
     width height  output size; a square one names the file `<prefix>.<size>.png`
@@ -158,7 +158,7 @@ DEFAULTS = {
     "width": 256,
     "height": 256,
     "variant": "",
-    "hide_shells": ["LIMB"],
+    "hide_shells": [],
 }
 FLOAT_KEYS = ("longitude", "latitude", "fill", "zoom", "pan_x", "pan_y", "light_left",
               "light_up", "brightness", "ev", "ev_auto", "clip_limit", "camera_radii",
