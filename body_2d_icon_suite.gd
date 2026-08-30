@@ -33,8 +33,9 @@ extends IVAssistantTestSuite
 ## [method IVBody.make_body_visual] — and posed by the point of the body facing the
 ## camera rather than by turntable angles, so a pose is a longitude and a latitude that
 ## survive a re-bake or a re-source. Lighting is the engine's own: a single directional
-## source at [code]metering_key / albedo[/code], which is what [IVExposureManager]
-## settles a body's light energy to once it fills the view.[br][br]
+## source at [code]metering_key / albedo[/code] (a body's [code]meter_albedo[/code]
+## where it has one), which is what [IVExposureManager] settles a body's light energy
+## to once it fills the view.[br][br]
 ##
 ## Rendering needs frames, so a capture cannot answer within one JSON-RPC call:
 ## [code]capture_body_icon[/code] starts one and returns immediately, and
@@ -527,9 +528,14 @@ func _apply_shell_visibility(value: Variant) -> void:
 		shells[index].visible = _to_bool(flags[index], true)
 
 
+# meter_albedo ahead of albedo, the order IVExposureManager._get_albedo() takes. An icon
+# is lit at the energy the app's own metering settles on, so a body whose two columns
+# differ is lit wrongly by their whole ratio if this reads only the catalog value.
 func _get_albedo(body: IVBody) -> float:
-	var albedo_variant: Variant = body.characteristics.get(&"albedo")
-	if typeof(albedo_variant) == TYPE_FLOAT:
+	for field: StringName in [&"meter_albedo", &"albedo"]:
+		var albedo_variant: Variant = body.characteristics.get(field)
+		if typeof(albedo_variant) != TYPE_FLOAT:
+			continue
 		var albedo: float = albedo_variant
 		if albedo > 0.0:
 			return albedo
