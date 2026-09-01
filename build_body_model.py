@@ -6,10 +6,10 @@
 # *****************************************************************************
 """Build a custom body model (.glb) from an equirectangular DEM + albedo map.
 
-Produces a displaced ellipsoid mesh whose vertices are in kilometers (so the
-model drops into ivoyager at model_scale = 1000 m, exactly like the existing
-NASA-derived models, e.g. Mimas.1_1000.glb), with the albedo and a DEM-derived
-tangent-space normal map embedded in the glb material.
+Produces a displaced ellipsoid mesh whose vertices are in kilometers, like the
+existing NASA-derived models, with the albedo and a DEM-derived tangent-space
+normal map embedded in the glb material. ivoyager reads a model's unit off its
+file name, so the 1000 goes in the name the writer builds: Name.1_1000.glb.
 
 Frame conventions (matched to ivoyager_core; frames unified 2026-08-20):
   - The mesh is the displaced SphereMesh: authored Y-up (north pole = +Y), with
@@ -338,7 +338,7 @@ def main():
                         "+1 reproduces the pre-2026-08-19 mirrored meshes")
     p.add_argument("--invert-normal-y", action="store_true")
     p.add_argument("--model-scale", type=int, default=1000,
-                   help="for filename Name.1_<N>.glb and the file_adjustments row (m)")
+                   help="metres per model unit; encoded in the filename as Name.1_<N>.glb")
     p.add_argument("--max-proc-width", type=int, default=8192)
     p.add_argument("--out-dir", default=None)
     args = p.parse_args()
@@ -426,8 +426,6 @@ def main():
               normal_png, args.metallic, args.roughness, name)
     mb = out_glb.stat().st_size / 1048576
     print(f"\nwrote {out_glb}  ({mb:.1f} MB)")
-    print("\nAdd this row to addons/ivoyager_core/tables/file_adjustments.tsv:")
-    print(f"\t{out_glb.name}\t{args.model_scale}\t")
 
 
 if __name__ == "__main__":

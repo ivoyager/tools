@@ -28,7 +28,7 @@ Patched-conic trajectory data for real craft (Voyager 1 & 2, Pioneer 10, Juno, N
 
 ## Body models from a DEM
 
-`build_body_model.py` turns an equirectangular DEM plus an albedo map into a displaced-ellipsoid `.glb` whose vertices are in kilometers (so it drops in at `model_scale = 1000`, like the NASA-derived models). Two modes: `mesh` (the default — displaced mesh with an embedded detail normal map) and `normal` (a full equirectangular normal map only, for bodies that stay generic spheroids). It prints the `file_adjustments.tsv` row to add.
+`build_body_model.py` turns an equirectangular DEM plus an albedo map into a displaced-ellipsoid `.glb` whose vertices are in kilometers, like the NASA-derived models. The engine reads that scale from the output file name — `Name.1_1000.glb` is 1000 m per glb unit — so the name it writes is not cosmetic. Two modes: `mesh` (the default — displaced mesh with an embedded detail normal map) and `normal` (a full equirectangular normal map only, for bodies that stay generic spheroids).
 
 `make_iapetus_dem.py` synthesizes an idealized Iapetus DEM (the fossil bulge and equatorial ridge) to feed that script, since no measured global DEM of Iapetus exists. It is **not** measured topography — see its docstring for what it does and does not claim.
 
