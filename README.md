@@ -66,6 +66,25 @@ Two names are load-bearing and were both established empirically, so don't "corr
 
 **[SHADER_COMPILE_COST.md](https://github.com/ivoyager/ivoyager_core/blob/develop/SHADER_COMPILE_COST.md) in the Core plugin is the record** — what the numbers are, what drives them, what an edit to a given `.gdshaderinc` costs, and the traps this script exists to encode. Read it before acting on anything this prints.
 
+## Planetary rings
+
+`build_saturn_rings.py` bakes Bjoern Joensson's five radial ring profiles
+(https://bjj.mmedia.is/data/s_rings) into `rings/saturn.rings.<w>.exr` -- one file that
+imports as a `CompressedTexture2DArray` of three width x 1 layers (backscatter, forward
+scatter, unlit side), each holding premultiplied linear radiance in rgb and the occluded
+fraction in alpha. `rings.gdshader` samples it with one `textureLod` per layer.
+
+Three things about it are load-bearing and are argued in the script's docstring: the source
+profiles are **premultiplied** (a brightness profile is exactly 0 at every radius where the
+transparency is exactly 1), so the shader composites with `blend_premul_alpha` and must not
+multiply by alpha again; they are **linear**, which the script tests rather than assumes by
+fitting the single-scattering slab model both ways; and the file is **half float**, because
+an 8-bit one must either band the faint rings or let the engine average sRGB-encoded codes
+when it generates mipmaps -- and a distant ring is nothing but its own mip chain.
+
+`exr_writer.py` is the ~60-line uncompressed half-float EXR writer it uses, so the pipeline
+needs numpy and nothing else. `--verify` refits the model and re-reads the written file.
+
 ## Star field
 
 `build_star_binaries.py` bakes the ESA Hipparcos Main Catalogue (`hip_main.dat`, VizieR I/239) into the magnitude-binned `.ivbinary` point clouds that `IVStarsVisual` loads on init. Stdlib-only. Its magnitude bin edges must stay matched to `IVStarsVisual.BINARY_FILE_MAGNITUDES`.
