@@ -36,14 +36,24 @@ Source data (download into `source_data/asteroids/` beside this script):
     secres.syn    synthetic proper elements: secular-resonant asteroids
     tro.syn       synthetic proper elements: Jupiter Trojans
   JPL SBDB Query API, https://ssd-api.jpl.nasa.gov/doc/sbdb_query.html
-    sbdb_names.json   asteroid names; `--fetch-names` downloads it (~600 KB).
+    sbdb_names.json          asteroid names (~600 KB)
+    sbdb_designations.json   number <-> discovery designation (~23 MB)
+  `--fetch-sbdb` downloads both.
 
 The four `.syn` files partition the population -- no asteroid appears in two --
 and each supplies proper elements for catalog entries it can match by name. An
 entry with no proper elements keeps its osculating orbit and a two-body mean
 motion. An entry with no osculating row is dropped: the node, argument of
-periapsis and mean anomaly exist only in the `.cat` files, and AstDyS updates the
-two sets on different cadences.
+periapsis and mean anomaly exist only in the `.cat` files.
+
+AstDyS UPDATES THE TWO SETS ON DIFFERENT CADENCES, and that is why SBDB supplies
+designations as well as names. The catalogs re-key an asteroid the moment it is
+numbered; the proper elements are republished every year or two. A body numbered
+inside that window sits in the catalogs under its number and in the `.syn` files
+under its discovery designation, and matches neither -- which costs a Trojan the
+libration elements that put it in a cloud at all, so it is discarded as a suspect
+rather than merely losing its precession rates. The 2024 proper elements against
+the 2026 catalogs stranded 2926 Trojans this way.
 
 ELEMENT CONVENTIONS. AstDyS synthetic proper elements publish (n, g, s) as the
 frequencies of (mean longitude, longitude of perihelion, longitude of node). The
@@ -81,7 +91,7 @@ here.
 Usage (paths resolve relative to this script, so any working directory works):
     python addons/tools/build_asteroid_binaries.py                # build and write
     python addons/tools/build_asteroid_binaries.py --dry-run      # report, write nothing
-    python addons/tools/build_asteroid_binaries.py --fetch-names  # refresh SBDB names first
+    python addons/tools/build_asteroid_binaries.py --fetch-sbdb   # refresh JPL snapshots first
     python addons/tools/build_asteroid_binaries.py --verify       # self-checks only
 """
 
@@ -90,6 +100,7 @@ import array
 import json
 import math
 import os
+import re
 import struct
 import sys
 import urllib.parse
@@ -120,7 +131,15 @@ PROPER_FILES = ["all.syn", "tno.syn", "secres.syn"]
 TROJAN_FILE = "tro.syn"
 
 SBDB_URL = "https://ssd-api.jpl.nasa.gov/sbdb_query.api"
-SBDB_QUERY = {"fields": "pdes,name", "sb-kind": "a", "sb-cdata": '{"AND":["name|DF"]}'}
+SBDB_NAME_QUERY = {"fields": "pdes,name", "sb-kind": "a", "sb-cdata": '{"AND":["name|DF"]}'}
+# Numbered objects carry their discovery designation in `full_name`, which is what
+# resolves a .syn row keyed on a designation the catalogs have since retired. Cut at
+# H < 17.5 -- half a magnitude past the faintest group cutoff, against catalog-to-catalog
+# H revisions measured at +-0.05 -- because unconstrained this is a 1.4-million-row query.
+SBDB_DESIGNATION_QUERY = {"fields": "pdes,full_name", "sb-kind": "a",
+        "sb-cdata": '{"AND":["H|LT|17.5"]}'}
+# "848821 (2005 AR85)", "1 Ceres (A801 AA)" -- number, optional name, then designation.
+FULL_NAME_PATTERN = re.compile(r"^\s*(\d+)\s+.*\(([^()]+)\)\s*$")
 
 # Packed per-asteroid working record. Angles rad, rates rad/s, lengths au.
 (E_A, E_E, E_I, E_LAN, E_AP, E_M, E_N, E_MAG, E_S, E_G, E_LP, E_DA, E_DL, E_F,
@@ -376,14 +395,41 @@ def apply_proper_elements(source_dir, index_of, elements, report):
     report.append((TROJAN_FILE, n_applied, n_unmatched))
 
 
-def fetch_names(path):
-    url = f"{SBDB_URL}?{urllib.parse.urlencode(SBDB_QUERY)}"
-    print(f"fetching names from {url} ...")
-    with urllib.request.urlopen(url, timeout=120) as response:
+def fetch_sbdb(path, query, what):
+    url = f"{SBDB_URL}?{urllib.parse.urlencode(query)}"
+    print(f"fetching {what} from {url} ...")
+    with urllib.request.urlopen(url, timeout=600) as response:
         payload = response.read()
     with open(path, "wb") as handle:
         handle.write(payload)
-    print(f"  wrote {path} ({len(payload) / 1024.0:.0f} KiB)")
+    print(f"  wrote {path} ({len(payload) / 1048576.0:.1f} MiB)")
+
+
+def apply_designation_aliases(path, index_of):
+    """Let a `.syn` row keyed on a provisional designation reach the catalog row that
+    now carries a number instead. AstDyS re-keys an asteroid the moment it is numbered
+    but republishes proper elements only every year or two, so a body numbered inside
+    that window is present in both sets under two different names and matches neither.
+    Unmatched, a Trojan loses the libration elements that put it in a cloud at all and
+    is discarded as a suspect; everything else silently drops to a two-body orbit.
+
+    An alias is added only where the designation is not itself a live catalog key, so
+    this can never displace a direct match."""
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    n_aliased = 0
+    for designation, full_name in payload["data"]:
+        if not designation.isdigit() or designation not in index_of:
+            continue
+        match = FULL_NAME_PATTERN.match(full_name or "")
+        if match is None:
+            continue
+        provisional = match.group(2).replace(" ", "")
+        if provisional in index_of:
+            continue
+        index_of[provisional] = index_of[designation]
+        n_aliased += 1
+    return len(payload["data"]), n_aliased
 
 
 def apply_names(path, keys, index_of):
@@ -617,8 +663,10 @@ def main():
                  "(default: <project>/addons/ivoyager_assets/asteroid_binaries)")
     parser.add_argument("--names-file", default=None,
             help="SBDB names JSON (default: <source-dir>/sbdb_names.json)")
-    parser.add_argument("--fetch-names", action="store_true",
-            help="download the SBDB name query to --names-file before building")
+    parser.add_argument("--designations-file", default=None,
+            help="SBDB designations JSON (default: <source-dir>/sbdb_designations.json)")
+    parser.add_argument("--fetch-sbdb", action="store_true",
+            help="download both SBDB snapshots before building")
     parser.add_argument("--dry-run", action="store_true", help="parse and report, write no files")
     parser.add_argument("--verify", action="store_true",
             help="run self-checks against orbits.tsv and the Core loader, then exit")
@@ -627,6 +675,8 @@ def main():
     tables_dir = os.path.join(core_dir, "tables")
     if args.names_file is None:
         args.names_file = os.path.join(args.source_dir, "sbdb_names.json")
+    if args.designations_file is None:
+        args.designations_file = os.path.join(args.source_dir, "sbdb_designations.json")
     if args.out_dir is None:
         args.out_dir = str(project_dir() / "addons" / "ivoyager_assets" / "asteroid_binaries")
 
@@ -634,8 +684,9 @@ def main():
         print("verifying ...")
         sys.exit(0 if verify(tables_dir, core_dir) else 1)
 
-    if args.fetch_names:
-        fetch_names(args.names_file)
+    if args.fetch_sbdb:
+        fetch_sbdb(args.names_file, SBDB_NAME_QUERY, "names")
+        fetch_sbdb(args.designations_file, SBDB_DESIGNATION_QUERY, "designations")
 
     groups = read_groups(tables_dir)
     max_magnitude = max(group["mag_cutoff"] for group in groups if not group["skip"])
@@ -649,6 +700,10 @@ def main():
     print(f"  {n_read} catalog rows, {count} kept "
             f"({n_faint} fainter than {max_magnitude}, {n_duplicate} duplicate keys)")
     print(f"  epoch MJD {epoch_mjd:.6f} = {epoch_time:.1f} s from J2000")
+
+    n_sbdb, n_aliased = apply_designation_aliases(args.designations_file, index_of)
+    print(f"  {os.path.basename(args.designations_file):<12} {n_sbdb} designations, "
+            f"{n_aliased} aliased to a numbered catalog row")
 
     report = []
     apply_proper_elements(args.source_dir, index_of, elements, report)
