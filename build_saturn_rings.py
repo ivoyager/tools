@@ -10,11 +10,14 @@
 
 ONE file, imported as a CompressedTexture2DArray of three <w> x 1 layers:
 
-    layer 0  backscatter    the lit side seen from near the sun's direction
+    layer 0  backscatter    the lit side at phase angle 0 deg
     layer 1  forwardscatter the lit side at phase angle 139 deg
     layer 2  unlitside      the side away from the sun, lit through the rings
 
-    rgb  LINEAR radiance, PREMULTIPLIED (the ring's own light over black sky)
+    rgb  LINEAR SCATTERING STRENGTH -- the ring's own light DIVIDED BY the
+         single-scattering slab's geometry term at the geometry the profile was
+         observed at, so the shader can re-apply that term at the angles it is
+         actually rendering. See RE-REFERENCING below.
     a    1 - transparency: the fraction of the background this radius occludes,
          at NORMAL incidence
 
@@ -34,10 +37,12 @@ profile is exactly 0 at all 1031 radii where transparency is exactly 1 -- materi
 absent, not material dark -- so it is an observed image brightness that already
 carries the ring's own coverage, and the pair (brightness, 1 - transparency) is a
 premultiplied RGBA. Joensson's page says the same in words: "it's really not possible
-to use this data alone, you need the transparency profile as well". Composite it with
-`blend_premul_alpha` (radiance + T * background), never by multiplying rgb by alpha
-again -- that darkens every radius by its own opacity, which costs the faint C ring
-and the Cassini Division almost everything they have.
+to use this data alone, you need the transparency profile as well". So the RENDERED
+value composites with `blend_premul_alpha` (radiance + T * background) and is never
+multiplied by alpha again -- that darkens every radius by its own opacity, which costs
+the faint C ring and the Cassini Division almost everything they have. The stored rgb
+is a step back from that radiance (see RE-REFERENCING), and the slab geometry term the
+shader multiplies it by is what carries the coverage back in.
 
 THE PROFILES ARE LINEAR, WHICH IS TESTABLE RATHER THAN ASSUMED. Fitting the
 single-scattering slab model to the profiles against transmission -- `K (1 - T^k)`
@@ -53,13 +58,91 @@ ENCODED codes when it generates mipmaps, which is the one thing a radial profile
 must not do -- a distant ring is nothing but its own mip chain. Godot imports .exr
 to FORMAT_RGBAH and mips it in linear light, so neither trade is needed.
 
-WHAT A PHOTOMETRIC OVERHAUL GETS FROM THIS FILE. Alpha is `1 - exp(-tau_normal)`,
-so `tau = -ln(1 - a)` recovers the optical depth the occultation measured, and a
-slant path is `(1 - a)^(1/mu)` -- which is what `_sun_occlusion.gdshaderinc` already
-does for the sun leg. The per-radius tint survives as the chromaticity of layer 0
-(the scalar profile cannot tint it), and layers 0 and 1 are two phase samples of the
-same surface. Nothing published here is thrown away and nothing is baked in: the
-1.05 forward-scatter reddening and every brightness boost stay shader uniforms.
+RE-REFERENCING: THE PROFILES ARE OBSERVATIONS AT ONE GEOMETRY, AND A RENDERER NEEDS
+THEM AT ANOTHER
+-------------------------------------------------------------------------------
+A published profile is brightness at whatever ring opening angle its images were
+taken at, so shipping it as-is freezes that geometry -- which is exactly what the
+retired shader did, and why its rings held one brightness from a 26 deg opening down
+to 0.5 deg while the path through the layer grew 50x. What has to be stored instead
+is the part that does NOT depend on geometry.
+
+The single-scattering slab separates them. Emergent brightness is
+
+    lit    I = S * mu0/(mu+mu0) * (1 - exp(-tau (1/mu + 1/mu0)))
+    unlit  I = S * mu0/(mu0-mu) * (exp(-tau/mu0) - exp(-tau/mu))
+
+with mu, mu0 the sines of the camera's and the sun's elevation above the ring plane
+and tau the normal optical depth alpha already carries. Everything after S is
+geometry; S is the ring's own scattering strength (single-scattering albedo times
+phase function), a property of the particles. So the build divides the published
+profile by its own geometry term and stores S; the shader multiplies the term back
+at the angles it is rendering. THE DIVISION IS THE WHOLE POINT OF THE ASSET.
+
+The observing geometry is not published, so it is FITTED FROM THE DATA -- the slab
+model's tau dependence is a one-parameter family for the lit case (`k = 1/mu + 1/mu0`,
+which is all the radial shape can determine) and two for the unlit one, and the
+transparency profile supplies tau at every radius. That the fit works at all is the
+check on the whole construction: one exponent explains most of each profile's radial
+contrast, and the quotient that is left comes out nearly FLAT across the C ring, the
+B ring, the Cassini Division and the A ring (medians 0.66 to 1.01), which is what
+identical ice particles at wildly different optical depths should look like. Fitted:
+
+    backscatter      k = 3.62   (mu = mu0 = 0.552, a 33.5 deg opening)   R2 0.873
+    forwardscatter   k = 5.99   (mu = mu0 = 0.334, a 19.5 deg opening)   R2 0.676
+    unlitside        1/mu0 = 1.92, 1/mu = 17.7  (31.3 deg and 3.2 deg)   R2 0.795
+
+Two things about that. The lit fits determine only the SUM `1/mu + 1/mu0`, so mu =
+mu0 is assumed to split it -- which is exactly right for the backscatter profile (the
+source states it is phase 0, where the sun and the camera ARE in the same direction)
+and is a pure level convention for the other, absorbed by rings.tsv's
+`forward_level`. And the fitted geometry is an EFFECTIVE one: it is what reproduces
+the published radial contrast, which need not be the true encounter geometry, since
+multiple scattering and the B ring's self-gravity wakes both hold contrast that
+single scattering would have flattened. Rendering AT the fitted geometry reproduces
+the published profile exactly; away from it the model moves by textbook single
+scattering, and the direction of that -- optically thin rings brightening toward
+grazing while the B ring saturates -- is the inversion every low-opening image shows.
+
+THE UNLIT SIDE HAS A FLOOR SINGLE SCATTERING CANNOT REACH, AND WITHOUT IT THE
+DIVISION EXPLODES. Binned against tau, the unlit profile falls to 0.046 by tau 1.8
+and then stays there, flat to tau 3.6, where transmission alone would have fallen
+another 40x. So the densest B ring's unlit face is ~800x brighter than the model
+allows and the quotient reaches 1819. Whether that residual is multiple scattering,
+light leaking between self-gravity wakes, or Joensson's own image floor, the data
+cannot say -- but it is real, it is nearly constant, and a model without it is
+useless there. Adding it as a constant `unlit_floor` bounds the quotient at 8.5 and,
+because the shader carries the SAME constant, makes the dense B ring's unlit face
+render at its published value instead of at a ratio of two near-zeros. THIS IS THE
+ONE FITTED VALUE THE SHADER ALSO NEEDS: it goes in rings.tsv, and the run prints the
+cell to paste.
+
+AND THE DENOMINATOR IS SMOOTHED TO THE NUMERATOR'S OWN RESOLUTION. Only
+`transparency` is really 5 km data; the imaging profiles change every 5 to 9 samples,
+having been resampled up to match it. Dividing a coarse numerator by a sharp
+denominator puts a spike wherever a gap edge falls between the two grids -- measured,
+the quotient's maximum was 52 against a median of 0.81. Smoothing the geometry term
+by each profile's OWN median run length (5, 9 and 7 samples, measured here rather
+than assumed) takes those maxima to 6.0, 4.4 and 4.4 and moves the median by 0.004.
+
+AND DO NOT CHASE A FLAT QUOTIENT PAST THAT, BECAUSE THE REMAINING TILT IS THE SIGNAL.
+Binned against tau, the stored strength is flat for the unlit layer (0.59 to 0.84 over
+four decades of tau) and flat for both lit layers above tau 0.2 -- but below it the
+backscatter rises to 2.2 against 1.6, and the FORWARD layer rises to 4.0 against 1.3.
+Smoothing wider flattens the backscatter (1.74 at a 355 km box) and barely touches the
+forward one (2.88), which is what says they are different things: the first is residual
+grid mismatch and the second is physics. Forward scattering is small particles, and the
+optically thin regions -- the C ring, the Cassini Division, the F ring region -- are
+exactly where the dust fraction is highest, which is why they blaze in a high-phase
+image and are nearly invisible in a low-phase one. So the box stays at each profile's
+own resolution and the tilt is stored.
+
+What the shader still gets straight from alpha: `tau = -ln(1 - a)`, and a slant path
+is `(1 - a)^(1/mu)` -- which is what `_sun_occlusion.gdshaderinc` already does for the
+sun leg. The per-radius tint survives as the chromaticity of the two lit layers (the
+scalar profiles cannot tint themselves), and nothing about appearance is baked in: the
+phase function, its opposition surge, the forward reddening and every level are
+rings.tsv cells.
 
 NO PADDING, AND NO CONSTANT SHARED WITH THE ENGINE. The retired asset padded 5 % of
 the span onto each end with transparent black and hard-coded that fraction in the
@@ -146,29 +229,114 @@ def read_profiles(source_dir):
     return profiles, width
 
 
-def build_rgba(profiles):
-    """The (3, width, 4) array the file holds: one row per layer, rgb premultiplied
-    linear radiance, alpha the occluded fraction at normal incidence."""
-    color = profiles["color"]
-    opacity = 1.0 - profiles["transparency"]
-    rows = [
-        color * profiles["backscattered"][:, None],
-        color * profiles["forwardscattered"][:, None],
-        UNLIT_COLOR * profiles["unlitside"][:, None],
-    ]
-    rgba = np.empty((3, len(opacity), 4), dtype=np.float32)
-    for index, rgb in enumerate(rows):
-        rgba[index, :, :3] = rgb
-        rgba[index, :, 3] = opacity
-    return rgba
-
-
 def optical_depth(transparency):
     """Normal optical depth. Transparency 0 means the occultation saw nothing through
     this radius, which is a floor on tau and not a measurement of it, so it maps to
     inf and every statistic below is a median rather than a mean."""
     with np.errstate(divide="ignore"):
         return -np.log(transparency)
+
+
+def sample_run_length(values):
+    """The profile's own radial resolution: the median run of identical consecutive
+    values. The imaging profiles were resampled up to the occultation's 5 km grid, so
+    this is how many of those samples one real measurement spans."""
+    change = np.flatnonzero(np.diff(values) != 0.0)
+    if change.size < 3:
+        return 1
+    return int(np.median(np.diff(change))) | 1  # odd, for a centred box
+
+
+def fit_reference_geometry(profiles):
+    """The geometry each published profile was observed at, fitted from its own tau
+    dependence. Returns a dict of layer name -> (mu, mu0, floor); see RE-REFERENCING.
+
+    Only radii with material AND a measured transmission vote: transparency exactly 1
+    is empty space (both sides of the ratio are 0) and exactly 0 is the occultation
+    seeing nothing through, a lower bound on tau rather than a measurement of it.
+    """
+    from scipy.optimize import curve_fit
+
+    transparency = profiles["transparency"]
+    tau = optical_depth(transparency)
+    measured = (transparency > 0.0) & (transparency < 1.0)
+    x, geometry = tau[measured], {}
+
+    def report(name, r_squared, mu, mu0, floor):
+        print(f"    {name:<16} mu {mu:.4f} ({np.degrees(np.arcsin(mu)):5.2f} deg), "
+              f"mu0 {mu0:.4f} ({np.degrees(np.arcsin(mu0)):5.2f} deg), "
+              f"floor {floor:.4f}   R2 {r_squared:.3f}")
+
+    for name in LAYERS[:2]:
+        observed = profiles[name][measured]
+        # k = 1/mu + 1/mu0 is all the radial shape determines; mu = mu0 splits it.
+        (level, k), _ = curve_fit(lambda t, level, k: level * (1.0 - t ** k),
+                                  transparency[measured], observed, p0=[0.85, 4.0],
+                                  maxfev=200000)
+        r_squared = 1.0 - (observed - level * (1.0 - transparency[measured] ** k)).var() \
+                / observed.var()
+        mu = 2.0 / k
+        if mu >= 1.0:
+            sys.exit(f"{name}: fitted k = {k:.3f} needs an elevation above 90 deg")
+        geometry[name] = (mu, mu, 0.0)
+        report(name, r_squared, mu, mu, 0.0)
+
+    name = LAYERS[2]
+    observed = profiles[name][measured]
+    unlit = lambda t, level, a, b, floor: level * (t ** a - t ** b) + floor
+    (level, a, b, floor), _ = curve_fit(unlit, transparency[measured], observed,
+                                        p0=[1.0, 1.5, 20.0, 0.04], maxfev=200000)
+    r_squared = 1.0 - (observed - unlit(transparency[measured], level, a, b, floor)).var() \
+            / observed.var()
+    mu0, mu = 1.0 / min(a, b), 1.0 / max(a, b)  # the larger elevation is the sun's leg
+    # The fit's floor is in units of the profile; the shader's is in units of the geometry
+    # term, which carries the mu0/(mu0-mu) prefactor the fit folded into `level`. It is also
+    # stated PER UNIT mu0, because a floor that does not vanish with the sun's elevation
+    # survives an equinox that takes every other term to zero -- and then the two faces of
+    # one ring disagree under geometry that is symmetric between them (rendered: a black
+    # silhouette on the lit side against a grey band on the unlit one). Diffusely
+    # transmitted radiance goes as the flux that entered, which is mu0, exactly as the
+    # single-scattering terms do at small mu0.
+    floor_in_geometry = floor / level * (mu0 / (mu0 - mu)) / mu0
+    geometry[name] = (mu, mu0, floor_in_geometry)
+    report(name, r_squared, mu, mu0, floor_in_geometry)
+    print(f"    -> rings.tsv `unlit_floor` for this ring system: {floor_in_geometry:.4f}")
+    return geometry
+
+
+def slab_geometry(tau, mu, mu0, floor):
+    """The single-scattering slab's geometry term: what a unit scattering strength
+    emits at these angles. Lit when mu and mu0 are on the same side, which for the
+    reference geometries here is decided by whether a floor was fitted."""
+    if floor <= 0.0:
+        return mu0 / (mu + mu0) * (1.0 - np.exp(-tau * (1.0 / mu + 1.0 / mu0)))
+    return mu0 / (mu0 - mu) * (np.exp(-tau / mu0) - np.exp(-tau / mu)) + floor * mu0
+
+
+def build_rgba(profiles, geometry):
+    """The (3, width, 4) array the file holds: one row per layer, rgb the scattering
+    strength left when the observing geometry is divided out, alpha the occluded
+    fraction at normal incidence."""
+    from scipy.ndimage import uniform_filter1d
+
+    transparency = profiles["transparency"]
+    tau = optical_depth(transparency)
+    empty = transparency >= 1.0  # no material: the quotient is 0/0, and the answer is 0
+    tints = (profiles["color"], profiles["color"], UNLIT_COLOR)
+    rgba = np.empty((3, transparency.size, 4), dtype=np.float32)
+    for index, name in enumerate(LAYERS):
+        observed = profiles[name]
+        width = sample_run_length(observed)
+        term = uniform_filter1d(slab_geometry(tau, *geometry[name]), width, mode="nearest")
+        strength = np.where(empty | (term <= 0.0), 0.0, observed / np.maximum(term, 1e-30))
+        stray = int((observed[empty] != 0.0).sum())
+        print(f"    {name:<16} smoothed over {width} samples ({width * 5} km); "
+              f"strength median {np.median(strength[~empty]):.3f}, "
+              f"p99.9 {np.percentile(strength[~empty], 99.9):.3f}, max {strength.max():.2f}"
+              + (f", {stray} stray nonzero sample(s) in empty space zeroed" if stray else ""))
+        rgba[index, :, :3] = tints[index] * strength[:, None]
+        rgba[index, :, 3] = 1.0 - transparency
+    return rgba
 
 
 def report(profiles, width, rgba):
@@ -190,7 +358,7 @@ def report(profiles, width, rgba):
         print(f"    {name:<17} median tau {median:.3f}   {verdict}")
     for index, name in enumerate(LAYERS):
         rgb = rgba[index, :, :3]
-        print(f"  layer {index} {name:<16} rgb max {rgb.max():.4f}, "
+        print(f"  layer {index} {name:<16} strength max {rgb.max():.4f}, "
               f"mean {rgb.mean():.4f}")
 
 
@@ -246,8 +414,11 @@ def main():
                  f"Download the five .txt profiles from https://bjj.mmedia.is/data/s_rings/ "
                  f"into that directory.")
     profiles, width = read_profiles(arguments.source_dir)
-    rgba = build_rgba(profiles)
     print(f"Saturn rings, from {arguments.source_dir}:")
+    print("  observing geometry fitted from each profile's own tau dependence:")
+    geometry = fit_reference_geometry(profiles)
+    print("  scattering strength, with that geometry divided out:")
+    rgba = build_rgba(profiles, geometry)
     report(profiles, width, rgba)
     if arguments.verify:
         verify_linearity(profiles)

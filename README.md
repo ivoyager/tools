@@ -71,10 +71,21 @@ Two names are load-bearing and were both established empirically, so don't "corr
 `build_saturn_rings.py` bakes Bjoern Joensson's five radial ring profiles
 (https://bjj.mmedia.is/data/s_rings) into `rings/saturn.rings.<w>.exr` -- one file that
 imports as a `CompressedTexture2DArray` of three width x 1 layers (backscatter, forward
-scatter, unlit side), each holding premultiplied linear radiance in rgb and the occluded
-fraction in alpha. `rings.gdshader` samples it with one `textureLod` per layer.
+scatter, unlit side), each holding linear scattering strength in rgb and the occluded
+fraction at normal incidence in alpha. `rings.gdshader` samples it with one `textureLod`
+per layer.
 
-Three things about it are load-bearing and are argued in the script's docstring: the source
+What the file holds is NOT the published brightness. A profile is an observation at one
+ring opening angle, so shipping it as-is freezes that geometry; the build divides each
+profile by the single-scattering slab's geometry term and stores what is left, which is a
+property of the particles, and the shader multiplies the term back at the angles it is
+rendering. The observing geometry is not published and is fitted from each profile's own
+optical-depth dependence -- and that the fit works is the check on the whole construction,
+the quotient coming out nearly flat across the C ring, the B ring, the Cassini Division and
+the A ring. One fitted value, `unlit_floor`, has to reach the shader as well and is printed
+as a `rings.tsv` cell to paste.
+
+Three more things are load-bearing and are argued in the script's docstring: the source
 profiles are **premultiplied** (a brightness profile is exactly 0 at every radius where the
 transparency is exactly 1), so the shader composites with `blend_premul_alpha` and must not
 multiply by alpha again; they are **linear**, which the script tests rather than assumes by
@@ -83,7 +94,8 @@ an 8-bit one must either band the faint rings or let the engine average sRGB-enc
 when it generates mipmaps -- and a distant ring is nothing but its own mip chain.
 
 `exr_writer.py` is the ~60-line uncompressed half-float EXR writer it uses, so the pipeline
-needs numpy and nothing else. `--verify` refits the model and re-reads the written file.
+needs numpy, scipy and nothing else. `--verify` refits the model and re-reads the written
+file.
 
 ## Star field
 
