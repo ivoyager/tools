@@ -69,3 +69,11 @@ Two names are load-bearing and were both established empirically, so don't "corr
 ## Star field
 
 `build_star_binaries.py` bakes the ESA Hipparcos Main Catalogue (`hip_main.dat`, VizieR I/239) into the magnitude-binned `.ivbinary` point clouds that `IVStarsVisual` loads on init. Stdlib-only. Its magnitude bin edges must stay matched to `IVStarsVisual.BINARY_FILE_MAGNITUDES`.
+
+## Asteroids
+
+`build_asteroid_binaries.py` bakes AstDyS-2 osculating and synthetic proper elements (`allnum.cat`, `ufitobs.cat`, `all.syn`, `tno.syn`, `secres.syn`, `tro.syn`), plus asteroid names from the JPL Small-Body Database query API, into the group- and magnitude-binned `.ivbinary` point clouds that `IVBinaryAsteroidsBuilder` loads on init. Stdlib-only; `--fetch-names` downloads the name query, `--verify` runs the self-checks, `--dry-run` reports without writing.
+
+Three cross-file invariants it cannot import and so checks or reads instead. Its magnitude bin edges must stay matched to `IVBinaryAsteroidsBuilder.BINARY_FILE_MAGNITUDES` (`--verify` compares them). Group membership criteria, magnitude cutoffs and row order come from the Core plugin's `tables/small_bodies_groups.tsv` at build time, first row that passes, so retuning a group is a table edit and not a code edit. And Jupiter Trojan libration phase is solved against Jupiter's row in `tables/orbits.tsv`, whose mean-longitude polynomial `--verify` checks against JPL's published value.
+
+**AstDyS publishes `n` as the mean *longitude* rate.** Mean anomaly therefore advances at `n - g`, which the point shader applies and `IVSmallBodiesGroup.get_mean_anomaly_rate()` exposes. Reading `n` as the mean anomaly rate adds `g` to every asteroid's mean motion — negligible-looking at 0.02 % for the main belt, but for a resonant body `g` *is* the locking rate (`3*n_Jupiter - 2*n` for a Hilda), so it unlocks the group from its resonance entirely.
