@@ -79,33 +79,48 @@ phase function), a property of the particles. So the build divides the published
 profile by its own geometry term and stores S; the shader multiplies the term back
 at the angles it is rendering. THE DIVISION IS THE WHOLE POINT OF THE ASSET.
 
-THE LIT REFERENCE IS PINNED AT THE RING SYSTEM'S MAXIMUM OPENING ANGLE, NOT FITTED,
-AND THAT IS THE DIFFERENCE BETWEEN BANDS AND MUSH. Fitted, the backscatter profile
-wants `k = 3.62`, i.e. a 33.5 deg opening -- and Saturn's rings never open past 26.7.
-Every render then happens at a LONGER path through the layer than the reference did,
-which means more saturation, which means less radial contrast than the profile that
-was published: measured, the B ring against the C ring fell to 3.52 at Saturn's widest
-and 2.05 at 12 deg, where the source has 3.84 and the retired shader displayed it
-directly. Pinning the reference at 26.7 reproduces the source exactly there and
-flattens only below it, which is the real physics.
+BOTH LIT REFERENCES ARE PINNED AT THE GEOMETRY THE IMAGES WERE TAKEN AT, AND A FIT
+CANNOT SUPPLY IT. The profiles are Voyager, 1980-81 -- within 1.5 years of Saturn's
+1980 equinox, when the sun stood a FEW DEGREES above the ring plane. From that
+equinox and Saturn's 7.37-year quarter period: Voyager 1 in November 1980 at 4.0 deg,
+Voyager 2 in August 1981 at 7.8 deg. The unlit profile independently fits its own
+shallower leg at 2.7 deg, which is the check that this is the right ballpark.
 
-The remaining geometry IS fitted, because the slab's tau dependence is a
-one-parameter family for the lit case (`k = 1/mu + 1/mu0`, which is all the radial
-shape can determine) and two for the unlit one, and the transparency profile supplies
-tau at every radius:
+A lit fit cannot measure geometry, and the two Voyager 1 profiles prove it between
+them. `forwardscattered` and `unlitside` are the SAME spacecraft at the SAME
+encounter, so they see one sun elevation; a lit fit determines only the SUM
+`k = 1/mu + 1/mu0`, and k can never be less than 1/mu0. Fitted, forwardscatter
+returns k = 5.62 where the unlit profile's own sun elevation demands at least 14.4,
+and backscatter returns 3.61 against at least 7.3. Both are impossible. What the fit
+absorbs instead is the RADIAL VARIATION OF PARTICLE ALBEDO, which this model has no
+term for: the C ring is darker than a constant-strength slab predicts, and the fit
+buys that back by moving to an elevation with less saturation.
 
-    backscatter      pinned at a 26.7 deg opening                        R2 0.867
-    forwardscatter   k = 6.03   (mu = mu0 = 0.331, a 19.4 deg opening)   R2 0.683
-    unlitside        1/mu0 = 2.02, 1/mu = 17.6  (29.7 deg and 3.3 deg)   R2 0.795
+That matters enormously, because the reference decides how much radial contrast every
+render carries. Pinned at Saturn's 26.7 deg maximum -- which is what shipped until
+2026-09-06, chosen because the free fit wanted an impossible 33.5 and 26.7 was the
+nearest possible angle -- the build divides out far too little saturation, and the B
+ring against the C ring renders 3.81 at Saturn's widest and 2.23 at 12 deg. Pinned at
+the encounter geometry it renders 9.67 and 5.51, against published Cassini radial
+scans of 6 to 12 at low phase.
 
-That those fits work at all is the check on the whole construction: one exponent
-explains most of each profile's radial contrast, and the quotient that is left comes
-out nearly FLAT across the C ring, the B ring, the Cassini Division and the A ring,
-which is what identical ice particles at wildly different optical depths should look
-like. The lit fits determine only the SUM `1/mu + 1/mu0`, so mu = mu0 splits it --
-exactly right for the backscatter profile (the source states it is phase 0, where the
-sun and the camera ARE in the same direction) and a pure level convention for the
-other, absorbed by rings.tsv's `forward_level`.
+The second, independent check is the particle strength each reference implies. The C
+ring and the Cassini Division are the known dark, contaminated regions -- Cassini puts
+them at roughly 0.2 to 0.5 of the A and B rings' single-scattering albedo. At a 26.7
+deg reference the C ring comes out at 0.83 of the A ring and the Cassini Division at
+1.33, i.e. BRIGHTER, which no measurement supports; at 6 deg they come out at 0.39 and
+0.73.
+
+    backscatter      pinned at a 6.0 deg opening (Voyager 2, Aug 1981)
+    forwardscatter   pinned at a 3.1 deg opening (Voyager 1, Nov 1980)
+    unlitside        the sun's leg fitted at 2.7 deg (Voyager 1, same encounter)
+
+A lit reference needs both legs and the data gives neither, so `mu = mu0` splits it:
+exactly right for the backscatter profile, which the source states is phase 0 (the sun
+and the camera ARE in the same direction there), and a weak assumption for the forward
+one, where 1/mu0 dominates the sum -- moving the camera leg over its whole admissible
+range moves that reference's k by less than half, against the factor of six between
+the old reference and the new.
 
 CLUMPING IS PINNED, NOT FITTED, BECAUSE NOTHING HERE MEASURES IT. Optical depth
 varies across the beam -- self-gravity wakes -- and a clumpy layer saturates more
@@ -324,7 +339,7 @@ def sample_run_length(values):
     return int(np.median(np.diff(change))) | 1  # odd, for a centred box
 
 
-def fit_reference_geometry(profiles, opening_deg, clumping):
+def fit_reference_geometry(profiles, opening_deg, forward_opening_deg, clumping):
     """The geometry each published profile describes, and the clumping that lets a real one
     explain it. Returns (layer -> (mu, mu0), clumping, layer -> pedestal); see
     RE-REFERENCING.
@@ -339,8 +354,6 @@ def fit_reference_geometry(profiles, opening_deg, clumping):
     tau = optical_depth(transparency)
     measured = (transparency > 0.0) & (transparency < 1.0)
     x, geometry = tau[measured], {}
-    mu_reference = np.sin(np.radians(opening_deg))
-    rate = 2.0 / mu_reference
 
     def report(name, r_squared, mu, mu0):
         print(f"    {name:<16} mu {mu:.4f} ({np.degrees(np.arcsin(mu)):5.2f} deg), "
@@ -383,28 +396,18 @@ def fit_reference_geometry(profiles, opening_deg, clumping):
     unlit_r_squared = 1.0 - (net[live] - unlit_model(x[live], level, a, b, clumping)).var() \
             / net[live].var()
 
-    # The lit reference is PINNED at the ring system's maximum opening angle rather than
-    # fitted: fitted, it wants a geometry Saturn never reaches (33.5 deg homogeneous against
-    # a maximum of 26.7), and every render then saturates harder than the reference did and
-    # washes the bands out -- the B ring against the C ring fell to 3.52 at Saturn's widest
-    # and 2.05 at 12 deg, where the source has 3.84. Pinned, the render reproduces the
-    # source exactly at that opening and flattens only below it, which is the real physics.
-    for name in LAYERS[:2]:
+    # BOTH lit references are PINNED at the encounter geometry -- see the header. A lit fit
+    # returns only k = 1/mu + 1/mu0, and for both of these profiles the value it returns is
+    # BELOW the 1/mu0 their own encounter demands, so it is not a geometry at all; what it
+    # absorbs is the radial variation of particle albedo. The R2 reported here is therefore
+    # the residual at the pinned geometry, not a goodness of fit that chose it.
+    for name, opening in zip(LAYERS[:2], (opening_deg, forward_opening_deg)):
         observed = profiles[name][measured]
-        # k = 1/mu + 1/mu0 is all the radial shape determines; mu = mu0 splits it.
-        if name == LAYERS[0]:
-            mu = mu_reference
-            k = 2.0 / mu
-            (level,), _ = curve_fit(
-                lambda t, level, k=k: level * (1.0 - beam_transmission(t, k, clumping)),
-                x, observed, p0=[0.85], maxfev=200000)
-        else:
-            # The forward-scatter profile is a different observation, so it keeps its own.
-            (level, k), _ = curve_fit(
-                lambda t, level, k: level * (1.0 - beam_transmission(t, k, clumping)),
-                x, observed, p0=[0.85, 2.0 / mu_reference],
-                bounds=([0.1, 2.0], [5.0, 400.0]), maxfev=200000)
-            mu = min(2.0 / k, 1.0)
+        mu = np.sin(np.radians(opening))
+        k = 2.0 / mu
+        (level,), _ = curve_fit(
+            lambda t, level, k=k: level * (1.0 - beam_transmission(t, k, clumping)),
+            x, observed, p0=[0.85], maxfev=200000)
         r_squared = 1.0 - (observed - level * (1.0 - beam_transmission(x, k, clumping))
                            ).var() / observed.var()
         geometry[name] = (mu, mu, True)
@@ -478,17 +481,33 @@ def build_rgba(profiles, geometry, clumping, pedestals):
         strength = np.where(usable, observed / np.maximum(term, 1e-30), 0.0)
         note = ""
         if pedestal > 0.0 and lit_strength is not None:
-            # S is a particle property, so the ratio to layer 0 is one number; measure it
-            # where this layer still has signal and use it where it does not.
-            ratio = float(np.median(strength[usable] / np.maximum(lit_strength[usable], 1e-30)))
-            spread = np.percentile(strength[usable] / np.maximum(lit_strength[usable], 1e-30),
-                                   [16, 84])
+            # The ratio to layer 0 does two jobs and is NOT one number, so it is measured
+            # twice, each time over the material its job is about. It is a ratio of two
+            # PHASE FUNCTIONS -- an unlit view is a high-phase view -- and the dustier C
+            # ring and Cassini Division forward-scatter more than the B ring, so it really
+            # does vary with radius: 17.7 at tau 0.02-0.1 falling to 6.2 by tau 0.7-1.2.
+            # The source's own two lit profiles say the same (forward/back C/B is 0.43
+            # against 0.26). It reads FLAT only while both references are fitted, because
+            # then both fits absorb the same radial albedo variation and it cancels in the
+            # quotient -- which is why it looked like a constant until the lit reference
+            # was pinned at the encounter geometry.
+            per_radius = strength / np.maximum(lit_strength, 1e-30)
+            ratio = float(np.median(per_radius[usable]))
+            spread = np.percentile(per_radius[usable], [16, 84])
+            # The FALLBACK extrapolates into the deep B ring, so its own ratio is measured
+            # on the densest material that still has signal rather than over the whole
+            # profile, where the dusty rings would drag it up by half again.
+            deep = usable & (tau >= np.percentile(tau[usable], 90.0))
+            deep_ratio = float(np.median(per_radius[deep]))
             fallback = ~empty & ~usable
-            strength = np.where(fallback, ratio * lit_strength, strength)
+            strength = np.where(fallback, deep_ratio * lit_strength, strength)
             note = (f"\n    {'':16} pedestal {pedestal:.4f} subtracted; strength measured "
                     f"on {int(usable.sum())} radii, ratio to layer 0 {ratio:.3f} "
-                    f"(p16-p84 {spread[0]:.3f}-{spread[1]:.3f}), and that ratio carries "
-                    f"the {int(fallback.sum())} radii the pedestal left dead"
+                    f"(p16-p84 {spread[0]:.3f}-{spread[1]:.3f} -- a PHASE ratio, so it "
+                    f"varies with radius; see the code)"
+                    f"\n    {'':16} the {int(fallback.sum())} radii the pedestal left dead "
+                    f"take {deep_ratio:.3f} x layer 0, measured on the densest tenth of the "
+                    f"live material, which is what they adjoin"
                     f"\n    {'':16} -> rings.tsv `unlit_level` for this ring system: "
                     f"{1.0 / ratio:.4f}. It is 1/ratio, which puts BOTH faces on ONE "
                     f"scattering strength: the profiles are peak-normalized independently "
@@ -590,10 +609,14 @@ def main():
                         help=f"directory holding the five .txt profiles (default {SOURCE_DIR})")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="output directory (default <project>/addons/ivoyager_assets/rings)")
-    parser.add_argument("--reference-opening", type=float, default=26.7,
-                        help="ring opening angle, in degrees, that the published lit "
-                             "profile is taken to describe (default 26.7, Saturn's "
-                             "maximum -- see RE-REFERENCING)")
+    parser.add_argument("--reference-opening", type=float, default=6.0,
+                        help="ring opening angle, in degrees, the BACKSCATTER profile was "
+                             "observed at (default 6.0: Voyager 2, August 1981, sixteen "
+                             "months after Saturn's 1980 equinox -- see RE-REFERENCING)")
+    parser.add_argument("--forward-reference-opening", type=float, default=3.1,
+                        help="the same for the FORWARDSCATTER profile (default 3.1: "
+                             "Voyager 1, November 1980, and the unlit profile fits its own "
+                             "sun leg at 2.7 from the same encounter)")
     parser.add_argument("--clumping", type=float, default=HOMOGENEOUS,
                         help="gamma shape of the optical depth across the beam; "
                              "the default is the homogeneous limit, and nothing in "
@@ -612,7 +635,8 @@ def main():
     print("  observing geometry, pinned and fitted:")
     clumping = arguments.clumping
     geometry, pedestals = fit_reference_geometry(
-            profiles, arguments.reference_opening, clumping)
+            profiles, arguments.reference_opening, arguments.forward_reference_opening,
+            clumping)
     print("  scattering strength, with that geometry divided out:")
     rgba = build_rgba(profiles, geometry, clumping, pedestals)
     report(profiles, width, rgba)
