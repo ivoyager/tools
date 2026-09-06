@@ -82,8 +82,8 @@ property of the particles, and the shader multiplies the term back at the angles
 rendering. The observing geometry is not published and is fitted from each profile's own
 optical-depth dependence -- and that the fit works is the check on the whole construction,
 the quotient coming out nearly flat across the C ring, the B ring, the Cassini Division and
-the A ring. One fitted value, `unlit_floor`, has to reach the shader as well and is printed
-as a `rings.tsv` cell to paste.
+the A ring. Two derived values, `unlit_level` and `clumping`, have to reach the shader as
+well, and the run prints the cells
 
 Three more things are load-bearing and are argued in the script's docstring: the source
 profiles are **premultiplied** (a brightness profile is exactly 0 at every radius where the

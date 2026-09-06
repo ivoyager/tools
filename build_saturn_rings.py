@@ -107,32 +107,50 @@ exactly right for the backscatter profile (the source states it is phase 0, wher
 sun and the camera ARE in the same direction) and a pure level convention for the
 other, absorbed by rings.tsv's `forward_level`.
 
-AND THE LAYER IS CLUMPY, WHICH IS FITTED WHERE IT IS MEASURED. Optical depth varies
-across the beam -- self-gravity wakes -- and a clumpy layer saturates more slowly than
-a homogeneous one. Taking tau as gamma-distributed about its mean with shape n gives
-`<exp(-k tau)> = (1 + k tau / n)^-n`, whose n -> infinity limit is the homogeneous
-slab exactly. Clumping controls TRANSMISSION, so it is fitted on the UNLIT profile and
-comes out at 22.8, i.e. nearly homogeneous. Fitting it on the LIT profile instead is
-the trap: that fit's R2 moves 0.8733 to 0.8787 across the entire family, so it
-constrains nothing at all, and the 1.7 it happens to prefer made the dense B ring pass
-15 % of the sun's light and rendered its unlit face nearly as bright as the C ring's,
-where every real unlit image has it far darker. It also produced a false confirmation
-worth naming: the unlit profile refitted under that clumping returned 7.4 and 8.3 deg,
-read as Voyager 2's own encounter opening -- and it was the fit collapsing to mu = mu0,
-which is degenerate.
+CLUMPING IS PINNED, NOT FITTED, BECAUSE NOTHING HERE MEASURES IT. Optical depth
+varies across the beam -- self-gravity wakes -- and a clumpy layer saturates more
+slowly than a homogeneous one. Taking tau as gamma-distributed about its mean with
+shape n gives `<exp(-k tau)> = (1 + k tau / n)^-n`, whose n -> infinity limit is the
+homogeneous slab exactly, and `--clumping` takes any member of that family.
 
-THE UNLIT SIDE HAS A FLOOR SINGLE SCATTERING CANNOT REACH, AND WITHOUT IT THE
-DIVISION EXPLODES. Binned against tau, the unlit profile falls to 0.046 by tau 1.8
-and then stays there, flat to tau 3.6, where transmission alone would have fallen
-another 40x. So the densest B ring's unlit face is ~800x brighter than the model
-allows and the quotient reaches 1819. Whether that residual is multiple scattering,
-light leaking between self-gravity wakes, or Joensson's own image floor, the data
-cannot say -- but it is real, it is nearly constant, and a model without it is
-useless there. Adding it as a constant `unlit_floor` bounds the quotient at 8.5 and,
-because the shader carries the SAME constant, makes the dense B ring's unlit face
-render at its published value instead of at a ratio of two near-zeros. THIS IS THE
-ONE FITTED VALUE THE SHADER ALSO NEEDS: it goes in rings.tsv, and the run prints the
-cell to paste.
+The trap is that it always LOOKS fitted. Clumping controls transmission, so the lit
+profile cannot constrain it -- that fit's R2 moves 0.8733 to 0.8787 across the entire
+family -- and the unlit profile only appears to, because the fit's leverage on it came
+from the flat deep end, which is the pedestal above. Scanned properly, on the live
+radii after the pedestal is subtracted, the unlit fit's R2 moves 0.5680 to 0.5849
+across the whole family -- 0.017, against a factor of FORTY in what the parameter
+actually does (transmission through tau 2.5 at mu0 0.45 runs 0.153 to 0.0039). So it
+is unconstrained by this data, and a fit returns a number that looks like an answer:
+2.54 on the live radii, 22.77 with the pedestal left in as a free floor, 1.7 off the
+lit profile. That last one shipped briefly and made the dense B ring pass 15 % of the
+sun's light. Pinned at the homogeneous limit, the model has no free parameter here and
+takes the DARKEST transmission of the family, which is also the closest to what real
+unlit images show. The run prints the scan so the absence of a constraint is visible
+rather than assumed.
+
+THE UNLIT PROFILE'S DEEP END IS THE SOURCE IMAGE'S BACKGROUND, AND IT MUST BE
+SUBTRACTED RATHER THAN MODELLED. Binned against its own optical depth the unlit
+profile falls to 0.046 by tau 1.4 and then STAYS there -- median 0.049 / 0.046 /
+0.046 / 0.049 and p10 0.039 / 0.039 / 0.041 / 0.041 across tau 1.4-2, 2-3, 3-5 and
+5-13.8. Over that decade of tau single scattering falls by a factor of 1e6, and even
+conservative two-stream diffuse transmission -- the most generous physical model
+there is -- falls by 3.1. A quantity flat to 4 % across it is not transmitted light
+by any mechanism: it is a pedestal. The publisher says as much about what the data
+means -- "completely black areas are either completely transparent or contain so much
+material that no sunlight passes through them" -- while in the file the opaque B ring
+never goes below 0.0366, and every one of the 1031 exactly-zero samples is EMPTY
+space.
+
+Fitting it as a constant `unlit_floor` and carrying the same constant in the shader
+(which is what shipped until 2026-09-06) puts a floor under the unlit face that does
+not fall with tau AT ALL, so an opaque ring glows. So: subtract it, and where
+subtracting it leaves nothing -- the deep B ring, where the source measured only its
+own background -- take the strength from the LIT layer instead. That is sound because
+S is a particle property, and measured it is: over the 8400 radii where the unlit
+signal exceeds twice the pedestal, a 50x range in tau, the unlit/lit strength ratio
+is FLAT at 0.56 (p16-p84 0.44-0.65), and it collapses only where the pedestal has
+eaten the signal. One measured constant replaces a fitted floor, and the unlit face's
+whole tau response becomes the model's.
 
 AND THE DENOMINATOR IS SMOOTHED TO THE NUMERATOR'S OWN RESOLUTION. Only
 `transparency` is really 5 km data; the imaging profiles change every 5 to 9 samples,
@@ -200,6 +218,9 @@ INNER_RADIUS_KM = 74510.0
 OUTER_RADIUS_KM = 140390.0
 
 LAYERS = ("backscattered", "forwardscattered", "unlitside")
+# The gamma shape at which the clumped transmission IS the homogeneous slab; the
+# shader takes that branch explicitly above the same threshold.
+HOMOGENEOUS = 1.0e6
 COLOR_FILE = "sat_rings_color"  # the publisher's own name; the other four match theirs
 
 IMPORT_TEMPLATE = """[remap]
@@ -254,6 +275,45 @@ def optical_depth(transparency):
         return -np.log(transparency)
 
 
+def _fit_unlit(model, tau, observed, shape):
+    """The unlit two-exponential fit at a FIXED clumping, which is the only way it is
+    used: see the header on why the shape is pinned rather than fitted."""
+    from scipy.optimize import curve_fit
+
+    (level, a, b), _ = curve_fit(lambda t, lv, aa, bb: model(t, lv, aa, bb, shape),
+                                 tau, observed, p0=[1.0, 1.5, 20.0],
+                                 bounds=([0.05, 0.2, 0.2], [20.0, 400.0, 400.0]),
+                                 maxfev=400000)
+    return level, a, b
+
+
+def measure_pedestal(values, tau, deep=1.4):
+    """The profile's own background: the level it stops falling at, with the evidence.
+
+    A transmitted-light profile must keep falling as tau rises; one that goes flat has
+    reached the source image's background, and every sample past that is background
+    rather than ring light. What is returned is the MINIMUM over the flat part, so
+    nothing real is subtracted anywhere.
+    """
+    octaves, edges = [], [deep, deep * 2.0, deep * 4.0, np.inf]
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        band = (tau >= lo) & (tau < hi)
+        if band.sum() > 20:
+            octaves.append((lo, hi, int(band.sum()), float(np.median(values[band]))))
+    flat = tau >= deep
+    pedestal = float(values[flat].min())
+    levels = [octave[3] for octave in octaves]
+    span = max(levels) / max(min(levels), 1e-9)
+    lines = [f"pedestal {pedestal:.4f}, the minimum over {int(flat.sum())} radii at "
+             f"tau >= {deep} where the profile has stopped falling:"]
+    for lo, hi, count, median in octaves:
+        lines.append(f"      tau {lo:>5.1f} to {hi:>5.1f}  n={count:>5}  "
+                     f"median {median:.4f}")
+    lines.append(f"      flat to {span:.2f}x across that range, where single scattering "
+                 f"would fall ~1e6 and diffuse transmission ~3")
+    return pedestal, "\n    ".join(lines)
+
+
 def sample_run_length(values):
     """The profile's own radial resolution: the median run of identical consecutive
     values. The imaging profiles were resampled up to the occultation's 5 km grid, so
@@ -264,9 +324,10 @@ def sample_run_length(values):
     return int(np.median(np.diff(change))) | 1  # odd, for a centred box
 
 
-def fit_reference_geometry(profiles, opening_deg):
+def fit_reference_geometry(profiles, opening_deg, clumping):
     """The geometry each published profile describes, and the clumping that lets a real one
-    explain it. Returns (dict of layer -> (mu, mu0, floor), clumping); see RE-REFERENCING.
+    explain it. Returns (layer -> (mu, mu0), clumping, layer -> pedestal); see
+    RE-REFERENCING.
 
     Only radii with material AND a measured transmission vote: transparency exactly 1
     is empty space (both sides of the ratio are 0) and exactly 0 is the occultation
@@ -281,36 +342,46 @@ def fit_reference_geometry(profiles, opening_deg):
     mu_reference = np.sin(np.radians(opening_deg))
     rate = 2.0 / mu_reference
 
-    def report(name, r_squared, mu, mu0, floor):
+    def report(name, r_squared, mu, mu0):
         print(f"    {name:<16} mu {mu:.4f} ({np.degrees(np.arcsin(mu)):5.2f} deg), "
-              f"mu0 {mu0:.4f} ({np.degrees(np.arcsin(mu0)):5.2f} deg), "
-              f"floor {floor:.4f}   R2 {r_squared:.3f}")
+              f"mu0 {mu0:.4f} ({np.degrees(np.arcsin(mu0)):5.2f} deg)   "
+              f"R2 {r_squared:.3f}")
 
-    # CLUMPING IS FITTED ON THE UNLIT PROFILE, WHICH IS THE ONE THAT MEASURES IT. It
-    # controls TRANSMISSION through the layer, so the lit profile barely constrains it --
-    # measured, the lit fit's R2 moves 0.8733 to 0.8787 across the entire family, which is
-    # no constraint at all -- while fitting it there and imposing the answer on the unlit
-    # face made the dense B ring transmit 15 % of the sun's light and its unlit face come
-    # out nearly as bright as the C ring's, where every real unlit image shows it far
-    # darker. Fitted where it is measured, the layer comes out ESSENTIALLY HOMOGENEOUS.
+    # CLUMPING IS PINNED -- see the header. The scan below is what says it has to be:
+    # it reports the whole family's residual so an absent constraint is visible.
     name = LAYERS[2]
     observed = profiles[name][measured]
 
-    def unlit_model(t, level, a, b, shape, floor):
-        return level * (beam_transmission(t, a, shape)
-                        - beam_transmission(t, b, shape)) + floor
+    # The pedestal is SUBTRACTED, not fitted -- see the header. What is left is fitted
+    # only where it survives that subtraction by a clear margin; past there the source
+    # measured its own background, and residual noise about zero would drag the geometry
+    # and the clumping toward whatever shape happens to fit it.
+    pedestal, pedestal_report = measure_pedestal(observed, x)
+    print(f"    {pedestal_report}")
+    net = observed - pedestal
+    live = net > 2.0 * pedestal
+    print(f"    fitting the unlit geometry on the {int(live.sum())} of {live.size} radii "
+          f"where the net signal exceeds twice that (tau to {x[live].max():.2f})")
 
-    # The floor is bounded at zero: it stands for light the model cannot reach, so a
-    # NEGATIVE one is the fit subtracting light to buy a better residual.
-    (level, a, b, clumping, floor), _ = curve_fit(
-        unlit_model, x, observed, p0=[1.0, 1.5, 20.0, 20.0, 0.04],
-        bounds=([0.05, 0.2, 0.2, 0.05, 0.0], [20.0, 400.0, 400.0, 1e4, 1.0]),
-        maxfev=400000)
-    unlit_r_squared = 1.0 - (observed - unlit_model(x, level, a, b, clumping, floor)).var() \
-            / observed.var()
-    print(f"    clumping {clumping:.2f}, fitted on the unlit profile (the one that "
-          f"measures transmission); R2 {unlit_r_squared:.3f}")
-    print(f"    -> rings.tsv `clumping` for this ring system: {clumping:.2f}")
+    def unlit_model(t, level, a, b, shape):
+        return level * (beam_transmission(t, a, shape)
+                        - beam_transmission(t, b, shape))
+
+    scan = []
+    for shape in (1.0, 4.0, 16.0, 64.0, HOMOGENEOUS):
+        try:
+            level, a, b = _fit_unlit(unlit_model, x[live], net[live], shape)
+        except RuntimeError:
+            continue
+        residual = net[live] - unlit_model(x[live], level, a, b, shape)
+        scan.append((shape, 1.0 - residual.var() / net[live].var()))
+    span = max(r for _, r in scan) - min(r for _, r in scan)
+    print(f"    clumping is PINNED at {clumping:g}; scanned, this profile does not "
+          f"constrain it -- R2 moves {span:.4f} across the family "
+          + ", ".join(f"({s:g}: {r:.4f})" for s, r in scan))
+    level, a, b = _fit_unlit(unlit_model, x[live], net[live], clumping)
+    unlit_r_squared = 1.0 - (net[live] - unlit_model(x[live], level, a, b, clumping)).var() \
+            / net[live].var()
 
     # The lit reference is PINNED at the ring system's maximum opening angle rather than
     # fitted: fitted, it wants a geometry Saturn never reaches (33.5 deg homogeneous against
@@ -336,23 +407,22 @@ def fit_reference_geometry(profiles, opening_deg):
             mu = min(2.0 / k, 1.0)
         r_squared = 1.0 - (observed - level * (1.0 - beam_transmission(x, k, clumping))
                            ).var() / observed.var()
-        geometry[name] = (mu, mu, 0.0)
-        report(name, r_squared, mu, mu, 0.0)
+        geometry[name] = (mu, mu, True)
+        report(name, r_squared, mu, mu)
 
-    mu0, mu = 1.0 / min(a, b), 1.0 / max(a, b)  # the larger elevation is the sun's leg
-    # The fit's floor is in units of the profile; the shader's is in units of the geometry
-    # term, which carries the mu0/(mu0-mu) prefactor the fit folded into `level`. It is also
-    # stated PER UNIT mu0, because a floor that does not vanish with the sun's elevation
-    # survives an equinox that takes every other term to zero -- and then the two faces of
-    # one ring disagree under geometry that is symmetric between them (rendered: a black
-    # silhouette on the lit side against a grey band on the unlit one). Diffusely
-    # transmitted radiance goes as the flux that entered, which is mu0, exactly as the
-    # single-scattering terms do at small mu0.
-    floor_in_geometry = floor / level * (mu0 / (mu0 - mu)) / mu0
-    geometry[LAYERS[2]] = (mu, mu0, floor_in_geometry)
-    report(LAYERS[2], unlit_r_squared, mu, mu0, floor_in_geometry)
-    print(f"    -> rings.tsv `unlit_floor` for this ring system: {floor_in_geometry:.4f}")
-    return geometry, clumping
+    # WHICH LEG IS THE SUN'S is not something the fit can tell -- swapping mu and mu0
+    # multiplies the term by mu/mu0 and leaves its SHAPE identical, so the radial data
+    # cannot distinguish them and the level absorbs the difference. Physics can:
+    # Voyager 1 met Saturn in November 1980, eight months after the ring-plane
+    # crossing, with the sun about 3 deg above the plane -- so the SMALLER elevation is
+    # the sun's, and the fit recovering 2.7 deg for it with nothing told to it is a
+    # real check on the whole re-referencing. Assigned the other way round (which is
+    # what shipped until 2026-09-06) the sun comes out at 39 deg, which Saturn's
+    # 26.7 deg maximum opening makes impossible.
+    mu0, mu = 1.0 / max(a, b), 1.0 / min(a, b)
+    geometry[LAYERS[2]] = (mu, mu0, False)
+    report(LAYERS[2], unlit_r_squared, mu, mu0)
+    return geometry, {LAYERS[2]: pedestal}
 
 
 def beam_transmission(tau, rate, clumping):
@@ -368,21 +438,28 @@ def beam_transmission(tau, rate, clumping):
     return (1.0 + rate * tau / clumping) ** (-clumping)
 
 
-def slab_geometry(tau, mu, mu0, floor, clumping=np.inf):
+def slab_geometry(tau, mu, mu0, lit, clumping=np.inf):
     """The single-scattering slab's geometry term: what a unit scattering strength
-    emits at these angles. Lit when mu and mu0 are on the same side, which for the
-    reference geometries here is decided by whether a floor was fitted."""
-    if floor <= 0.0:
+    emits at these angles, with the camera and the sun on the same side of the plane
+    ([param lit]) or on opposite sides."""
+    if lit:
         return mu0 / (mu + mu0) * (1.0 - beam_transmission(tau, 1.0 / mu + 1.0 / mu0,
                                                            clumping))
     return mu0 / (mu0 - mu) * (beam_transmission(tau, 1.0 / mu0, clumping)
-                               - beam_transmission(tau, 1.0 / mu, clumping)) + floor * mu0
+                               - beam_transmission(tau, 1.0 / mu, clumping))
 
 
-def build_rgba(profiles, geometry, clumping):
+def build_rgba(profiles, geometry, clumping, pedestals):
     """The (3, width, 4) array the file holds: one row per layer, rgb the scattering
     strength left when the observing geometry is divided out, alpha the occluded
-    fraction at normal incidence."""
+    fraction at normal incidence.
+
+    A layer with a pedestal has it subtracted first, and wherever that leaves nothing
+    the strength is taken from layer 0 instead -- see the header. Dividing the residue
+    of a subtraction by a near-zero geometry term is the one operation this build must
+    never do, and it is also the operation that hides a dead measurement behind a
+    plausible-looking number.
+    """
     from scipy.ndimage import uniform_filter1d
 
     transparency = profiles["transparency"]
@@ -390,17 +467,40 @@ def build_rgba(profiles, geometry, clumping):
     empty = transparency >= 1.0  # no material: the quotient is 0/0, and the answer is 0
     tints = (profiles["color"], profiles["color"], UNLIT_COLOR)
     rgba = np.empty((3, transparency.size, 4), dtype=np.float32)
+    lit_strength = None
     for index, name in enumerate(LAYERS):
-        observed = profiles[name]
-        width = sample_run_length(observed)
+        pedestal = pedestals.get(name, 0.0)
+        observed = profiles[name] - pedestal
+        width = sample_run_length(profiles[name])
         term = uniform_filter1d(slab_geometry(tau, *geometry[name], clumping=clumping),
                                 width, mode="nearest")
-        strength = np.where(empty | (term <= 0.0), 0.0, observed / np.maximum(term, 1e-30))
-        stray = int((observed[empty] != 0.0).sum())
+        usable = ~empty & (term > 0.0) & (observed > 2.0 * pedestal)
+        strength = np.where(usable, observed / np.maximum(term, 1e-30), 0.0)
+        note = ""
+        if pedestal > 0.0 and lit_strength is not None:
+            # S is a particle property, so the ratio to layer 0 is one number; measure it
+            # where this layer still has signal and use it where it does not.
+            ratio = float(np.median(strength[usable] / np.maximum(lit_strength[usable], 1e-30)))
+            spread = np.percentile(strength[usable] / np.maximum(lit_strength[usable], 1e-30),
+                                   [16, 84])
+            fallback = ~empty & ~usable
+            strength = np.where(fallback, ratio * lit_strength, strength)
+            note = (f"\n    {'':16} pedestal {pedestal:.4f} subtracted; strength measured "
+                    f"on {int(usable.sum())} radii, ratio to layer 0 {ratio:.3f} "
+                    f"(p16-p84 {spread[0]:.3f}-{spread[1]:.3f}), and that ratio carries "
+                    f"the {int(fallback.sum())} radii the pedestal left dead"
+                    f"\n    {'':16} -> rings.tsv `unlit_level` for this ring system: "
+                    f"{1.0 / ratio:.4f}. It is 1/ratio, which puts BOTH faces on ONE "
+                    f"scattering strength: the profiles are peak-normalized independently "
+                    f"and were observed at different phase angles, and this undoes both")
+        elif index == 0:
+            lit_strength = strength
+        stray = int((profiles[name][empty] != 0.0).sum())
         print(f"    {name:<16} smoothed over {width} samples ({width * 5} km); "
               f"strength median {np.median(strength[~empty]):.3f}, "
               f"p99.9 {np.percentile(strength[~empty], 99.9):.3f}, max {strength.max():.2f}"
-              + (f", {stray} stray nonzero sample(s) in empty space zeroed" if stray else ""))
+              + (f", {stray} stray nonzero sample(s) in empty space zeroed" if stray else "")
+              + note)
         rgba[index, :, :3] = tints[index] * strength[:, None]
         rgba[index, :, 3] = 1.0 - transparency
     return rgba
@@ -463,6 +563,25 @@ def verify_linearity(profiles):
         print(f"  {name:<16} slab-model R2: as published {as_published:.4f}, "
               f"sRGB-decoded {as_encoded:.4f}   -> {verdict}")
 
+    # THE SHARPER TEST, AND THE ONE THAT ACTUALLY SETTLES IT: the R2 comparison above is
+    # nearly a wash on the lit profile (0.69 against 0.67), but the fitted GEOMETRY is not.
+    # The lit exponent is `k = 1/mu + 1/mu0`, and mu = mu0 splits it, so a reading of the
+    # data implies a viewing elevation -- and a reading that needs mu > 1 implies no
+    # geometry at all. Read as published the profiles want 33 and 21 degrees; sRGB-decoded
+    # they are too contrasty for a single-scattering slab at ANY geometry.
+    print("  what elevation each reading implies (mu > 1 is not a geometry):")
+    for name in ("backscattered", "forwardscattered"):
+        line = f"  {name:<16}"
+        for label, values in (("as published", profiles[name][keep]),
+                              ("sRGB-decoded", srgb_to_linear(profiles[name][keep]))):
+            (_, exponent), _ = curve_fit(lit, kept, values / values.max(),
+                                         p0=[1.0, 2.0], maxfev=40000)
+            mu = 2.0 / max(exponent, 1e-6)
+            angle = (f"{np.degrees(np.arcsin(mu)):5.1f} deg" if mu <= 1.0
+                     else "  IMPOSSIBLE")
+            line += f"   {label} mu {mu:.3f} ({angle})"
+        print(line)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
@@ -475,6 +594,10 @@ def main():
                         help="ring opening angle, in degrees, that the published lit "
                              "profile is taken to describe (default 26.7, Saturn's "
                              "maximum -- see RE-REFERENCING)")
+    parser.add_argument("--clumping", type=float, default=HOMOGENEOUS,
+                        help="gamma shape of the optical depth across the beam; "
+                             "the default is the homogeneous limit, and nothing in "
+                             "these profiles constrains it (see the header)")
     parser.add_argument("--verify", action="store_true",
                         help="also refit the slab model and re-read the written file")
     parser.add_argument("--dry-run", action="store_true", help="report without writing")
@@ -487,9 +610,11 @@ def main():
     profiles, width = read_profiles(arguments.source_dir)
     print(f"Saturn rings, from {arguments.source_dir}:")
     print("  observing geometry, pinned and fitted:")
-    geometry, clumping = fit_reference_geometry(profiles, arguments.reference_opening)
+    clumping = arguments.clumping
+    geometry, pedestals = fit_reference_geometry(
+            profiles, arguments.reference_opening, clumping)
     print("  scattering strength, with that geometry divided out:")
-    rgba = build_rgba(profiles, geometry, clumping)
+    rgba = build_rgba(profiles, geometry, clumping, pedestals)
     report(profiles, width, rgba)
     if arguments.verify:
         verify_linearity(profiles)
