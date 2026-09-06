@@ -79,30 +79,47 @@ phase function), a property of the particles. So the build divides the published
 profile by its own geometry term and stores S; the shader multiplies the term back
 at the angles it is rendering. THE DIVISION IS THE WHOLE POINT OF THE ASSET.
 
-The observing geometry is not published, so it is FITTED FROM THE DATA -- the slab
-model's tau dependence is a one-parameter family for the lit case (`k = 1/mu + 1/mu0`,
-which is all the radial shape can determine) and two for the unlit one, and the
-transparency profile supplies tau at every radius. That the fit works at all is the
-check on the whole construction: one exponent explains most of each profile's radial
-contrast, and the quotient that is left comes out nearly FLAT across the C ring, the
-B ring, the Cassini Division and the A ring (medians 0.66 to 1.01), which is what
-identical ice particles at wildly different optical depths should look like. Fitted:
+THE LIT REFERENCE IS PINNED AT THE RING SYSTEM'S MAXIMUM OPENING ANGLE, NOT FITTED,
+AND THAT IS THE DIFFERENCE BETWEEN BANDS AND MUSH. Fitted, the backscatter profile
+wants `k = 3.62`, i.e. a 33.5 deg opening -- and Saturn's rings never open past 26.7.
+Every render then happens at a LONGER path through the layer than the reference did,
+which means more saturation, which means less radial contrast than the profile that
+was published: measured, the B ring against the C ring fell to 3.52 at Saturn's widest
+and 2.05 at 12 deg, where the source has 3.84 and the retired shader displayed it
+directly. Pinning the reference at 26.7 reproduces the source exactly there and
+flattens only below it, which is the real physics.
 
-    backscatter      k = 3.62   (mu = mu0 = 0.552, a 33.5 deg opening)   R2 0.873
-    forwardscatter   k = 5.99   (mu = mu0 = 0.334, a 19.5 deg opening)   R2 0.676
-    unlitside        1/mu0 = 1.92, 1/mu = 17.7  (31.3 deg and 3.2 deg)   R2 0.795
+The remaining geometry IS fitted, because the slab's tau dependence is a
+one-parameter family for the lit case (`k = 1/mu + 1/mu0`, which is all the radial
+shape can determine) and two for the unlit one, and the transparency profile supplies
+tau at every radius:
 
-Two things about that. The lit fits determine only the SUM `1/mu + 1/mu0`, so mu =
-mu0 is assumed to split it -- which is exactly right for the backscatter profile (the
-source states it is phase 0, where the sun and the camera ARE in the same direction)
-and is a pure level convention for the other, absorbed by rings.tsv's
-`forward_level`. And the fitted geometry is an EFFECTIVE one: it is what reproduces
-the published radial contrast, which need not be the true encounter geometry, since
-multiple scattering and the B ring's self-gravity wakes both hold contrast that
-single scattering would have flattened. Rendering AT the fitted geometry reproduces
-the published profile exactly; away from it the model moves by textbook single
-scattering, and the direction of that -- optically thin rings brightening toward
-grazing while the B ring saturates -- is the inversion every low-opening image shows.
+    backscatter      pinned at a 26.7 deg opening                        R2 0.867
+    forwardscatter   k = 6.03   (mu = mu0 = 0.331, a 19.4 deg opening)   R2 0.683
+    unlitside        1/mu0 = 2.02, 1/mu = 17.6  (29.7 deg and 3.3 deg)   R2 0.795
+
+That those fits work at all is the check on the whole construction: one exponent
+explains most of each profile's radial contrast, and the quotient that is left comes
+out nearly FLAT across the C ring, the B ring, the Cassini Division and the A ring,
+which is what identical ice particles at wildly different optical depths should look
+like. The lit fits determine only the SUM `1/mu + 1/mu0`, so mu = mu0 splits it --
+exactly right for the backscatter profile (the source states it is phase 0, where the
+sun and the camera ARE in the same direction) and a pure level convention for the
+other, absorbed by rings.tsv's `forward_level`.
+
+AND THE LAYER IS CLUMPY, WHICH IS FITTED WHERE IT IS MEASURED. Optical depth varies
+across the beam -- self-gravity wakes -- and a clumpy layer saturates more slowly than
+a homogeneous one. Taking tau as gamma-distributed about its mean with shape n gives
+`<exp(-k tau)> = (1 + k tau / n)^-n`, whose n -> infinity limit is the homogeneous
+slab exactly. Clumping controls TRANSMISSION, so it is fitted on the UNLIT profile and
+comes out at 22.8, i.e. nearly homogeneous. Fitting it on the LIT profile instead is
+the trap: that fit's R2 moves 0.8733 to 0.8787 across the entire family, so it
+constrains nothing at all, and the 1.7 it happens to prefer made the dense B ring pass
+15 % of the sun's light and rendered its unlit face nearly as bright as the C ring's,
+where every real unlit image has it far darker. It also produced a false confirmation
+worth naming: the unlit profile refitted under that clumping returned 7.4 and 8.3 deg,
+read as Voyager 2's own encounter opening -- and it was the fit collapsing to mu = mu0,
+which is degenerate.
 
 THE UNLIT SIDE HAS A FLOOR SINGLE SCATTERING CANNOT REACH, AND WITHOUT IT THE
 DIVISION EXPLODES. Binned against tau, the unlit profile falls to 0.046 by tau 1.8
@@ -247,9 +264,9 @@ def sample_run_length(values):
     return int(np.median(np.diff(change))) | 1  # odd, for a centred box
 
 
-def fit_reference_geometry(profiles):
-    """The geometry each published profile was observed at, fitted from its own tau
-    dependence. Returns a dict of layer name -> (mu, mu0, floor); see RE-REFERENCING.
+def fit_reference_geometry(profiles, opening_deg):
+    """The geometry each published profile describes, and the clumping that lets a real one
+    explain it. Returns (dict of layer -> (mu, mu0, floor), clumping); see RE-REFERENCING.
 
     Only radii with material AND a measured transmission vote: transparency exactly 1
     is empty space (both sides of the ratio are 0) and exactly 0 is the occultation
@@ -261,33 +278,67 @@ def fit_reference_geometry(profiles):
     tau = optical_depth(transparency)
     measured = (transparency > 0.0) & (transparency < 1.0)
     x, geometry = tau[measured], {}
+    mu_reference = np.sin(np.radians(opening_deg))
+    rate = 2.0 / mu_reference
 
     def report(name, r_squared, mu, mu0, floor):
         print(f"    {name:<16} mu {mu:.4f} ({np.degrees(np.arcsin(mu)):5.2f} deg), "
               f"mu0 {mu0:.4f} ({np.degrees(np.arcsin(mu0)):5.2f} deg), "
               f"floor {floor:.4f}   R2 {r_squared:.3f}")
 
+    # CLUMPING IS FITTED ON THE UNLIT PROFILE, WHICH IS THE ONE THAT MEASURES IT. It
+    # controls TRANSMISSION through the layer, so the lit profile barely constrains it --
+    # measured, the lit fit's R2 moves 0.8733 to 0.8787 across the entire family, which is
+    # no constraint at all -- while fitting it there and imposing the answer on the unlit
+    # face made the dense B ring transmit 15 % of the sun's light and its unlit face come
+    # out nearly as bright as the C ring's, where every real unlit image shows it far
+    # darker. Fitted where it is measured, the layer comes out ESSENTIALLY HOMOGENEOUS.
+    name = LAYERS[2]
+    observed = profiles[name][measured]
+
+    def unlit_model(t, level, a, b, shape, floor):
+        return level * (beam_transmission(t, a, shape)
+                        - beam_transmission(t, b, shape)) + floor
+
+    # The floor is bounded at zero: it stands for light the model cannot reach, so a
+    # NEGATIVE one is the fit subtracting light to buy a better residual.
+    (level, a, b, clumping, floor), _ = curve_fit(
+        unlit_model, x, observed, p0=[1.0, 1.5, 20.0, 20.0, 0.04],
+        bounds=([0.05, 0.2, 0.2, 0.05, 0.0], [20.0, 400.0, 400.0, 1e4, 1.0]),
+        maxfev=400000)
+    unlit_r_squared = 1.0 - (observed - unlit_model(x, level, a, b, clumping, floor)).var() \
+            / observed.var()
+    print(f"    clumping {clumping:.2f}, fitted on the unlit profile (the one that "
+          f"measures transmission); R2 {unlit_r_squared:.3f}")
+    print(f"    -> rings.tsv `clumping` for this ring system: {clumping:.2f}")
+
+    # The lit reference is PINNED at the ring system's maximum opening angle rather than
+    # fitted: fitted, it wants a geometry Saturn never reaches (33.5 deg homogeneous against
+    # a maximum of 26.7), and every render then saturates harder than the reference did and
+    # washes the bands out -- the B ring against the C ring fell to 3.52 at Saturn's widest
+    # and 2.05 at 12 deg, where the source has 3.84. Pinned, the render reproduces the
+    # source exactly at that opening and flattens only below it, which is the real physics.
     for name in LAYERS[:2]:
         observed = profiles[name][measured]
         # k = 1/mu + 1/mu0 is all the radial shape determines; mu = mu0 splits it.
-        (level, k), _ = curve_fit(lambda t, level, k: level * (1.0 - t ** k),
-                                  transparency[measured], observed, p0=[0.85, 4.0],
-                                  maxfev=200000)
-        r_squared = 1.0 - (observed - level * (1.0 - transparency[measured] ** k)).var() \
-                / observed.var()
-        mu = 2.0 / k
-        if mu >= 1.0:
-            sys.exit(f"{name}: fitted k = {k:.3f} needs an elevation above 90 deg")
+        if name == LAYERS[0]:
+            mu = mu_reference
+            k = 2.0 / mu
+            (level,), _ = curve_fit(
+                lambda t, level, k=k: level * (1.0 - beam_transmission(t, k, clumping)),
+                x, observed, p0=[0.85], maxfev=200000)
+        else:
+            # The forward-scatter profile is a different observation, so it keeps its own.
+            (level, k), _ = curve_fit(
+                lambda t, level, k: level * (1.0 - beam_transmission(t, k, clumping)),
+                x, observed, p0=[0.85, 2.0 / mu_reference],
+                bounds=([0.1, 2.0], [5.0, 400.0]), maxfev=200000)
+            mu = min(2.0 / k, 1.0)
+        r_squared = 1.0 - (observed - level * (1.0 - beam_transmission(x, k, clumping))
+                           ).var() / observed.var()
         geometry[name] = (mu, mu, 0.0)
         report(name, r_squared, mu, mu, 0.0)
 
-    name = LAYERS[2]
-    observed = profiles[name][measured]
-    unlit = lambda t, level, a, b, floor: level * (t ** a - t ** b) + floor
-    (level, a, b, floor), _ = curve_fit(unlit, transparency[measured], observed,
-                                        p0=[1.0, 1.5, 20.0, 0.04], maxfev=200000)
-    r_squared = 1.0 - (observed - unlit(transparency[measured], level, a, b, floor)).var() \
-            / observed.var()
     mu0, mu = 1.0 / min(a, b), 1.0 / max(a, b)  # the larger elevation is the sun's leg
     # The fit's floor is in units of the profile; the shader's is in units of the geometry
     # term, which carries the mu0/(mu0-mu) prefactor the fit folded into `level`. It is also
@@ -298,22 +349,37 @@ def fit_reference_geometry(profiles):
     # transmitted radiance goes as the flux that entered, which is mu0, exactly as the
     # single-scattering terms do at small mu0.
     floor_in_geometry = floor / level * (mu0 / (mu0 - mu)) / mu0
-    geometry[name] = (mu, mu0, floor_in_geometry)
-    report(name, r_squared, mu, mu0, floor_in_geometry)
+    geometry[LAYERS[2]] = (mu, mu0, floor_in_geometry)
+    report(LAYERS[2], unlit_r_squared, mu, mu0, floor_in_geometry)
     print(f"    -> rings.tsv `unlit_floor` for this ring system: {floor_in_geometry:.4f}")
-    return geometry
+    return geometry, clumping
 
 
-def slab_geometry(tau, mu, mu0, floor):
+def beam_transmission(tau, rate, clumping):
+    """<exp(-rate * tau)> with tau gamma-distributed about its mean with shape `clumping`.
+
+    A real ring is not a uniform sheet -- self-gravity wakes make optical depth vary across
+    the beam, and a clumpy layer saturates far more slowly than a homogeneous one, because
+    the thin lanes keep contributing after the dense parts have gone opaque. `clumping`
+    -> infinity is the homogeneous slab, exactly.
+    """
+    if clumping > 1e6:
+        return np.exp(-rate * tau)
+    return (1.0 + rate * tau / clumping) ** (-clumping)
+
+
+def slab_geometry(tau, mu, mu0, floor, clumping=np.inf):
     """The single-scattering slab's geometry term: what a unit scattering strength
     emits at these angles. Lit when mu and mu0 are on the same side, which for the
     reference geometries here is decided by whether a floor was fitted."""
     if floor <= 0.0:
-        return mu0 / (mu + mu0) * (1.0 - np.exp(-tau * (1.0 / mu + 1.0 / mu0)))
-    return mu0 / (mu0 - mu) * (np.exp(-tau / mu0) - np.exp(-tau / mu)) + floor * mu0
+        return mu0 / (mu + mu0) * (1.0 - beam_transmission(tau, 1.0 / mu + 1.0 / mu0,
+                                                           clumping))
+    return mu0 / (mu0 - mu) * (beam_transmission(tau, 1.0 / mu0, clumping)
+                               - beam_transmission(tau, 1.0 / mu, clumping)) + floor * mu0
 
 
-def build_rgba(profiles, geometry):
+def build_rgba(profiles, geometry, clumping):
     """The (3, width, 4) array the file holds: one row per layer, rgb the scattering
     strength left when the observing geometry is divided out, alpha the occluded
     fraction at normal incidence."""
@@ -327,7 +393,8 @@ def build_rgba(profiles, geometry):
     for index, name in enumerate(LAYERS):
         observed = profiles[name]
         width = sample_run_length(observed)
-        term = uniform_filter1d(slab_geometry(tau, *geometry[name]), width, mode="nearest")
+        term = uniform_filter1d(slab_geometry(tau, *geometry[name], clumping=clumping),
+                                width, mode="nearest")
         strength = np.where(empty | (term <= 0.0), 0.0, observed / np.maximum(term, 1e-30))
         stray = int((observed[empty] != 0.0).sum())
         print(f"    {name:<16} smoothed over {width} samples ({width * 5} km); "
@@ -404,6 +471,10 @@ def main():
                         help=f"directory holding the five .txt profiles (default {SOURCE_DIR})")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="output directory (default <project>/addons/ivoyager_assets/rings)")
+    parser.add_argument("--reference-opening", type=float, default=26.7,
+                        help="ring opening angle, in degrees, that the published lit "
+                             "profile is taken to describe (default 26.7, Saturn's "
+                             "maximum -- see RE-REFERENCING)")
     parser.add_argument("--verify", action="store_true",
                         help="also refit the slab model and re-read the written file")
     parser.add_argument("--dry-run", action="store_true", help="report without writing")
@@ -415,10 +486,10 @@ def main():
                  f"into that directory.")
     profiles, width = read_profiles(arguments.source_dir)
     print(f"Saturn rings, from {arguments.source_dir}:")
-    print("  observing geometry fitted from each profile's own tau dependence:")
-    geometry = fit_reference_geometry(profiles)
+    print("  observing geometry, pinned and fitted:")
+    geometry, clumping = fit_reference_geometry(profiles, arguments.reference_opening)
     print("  scattering strength, with that geometry divided out:")
-    rgba = build_rgba(profiles, geometry)
+    rgba = build_rgba(profiles, geometry, clumping)
     report(profiles, width, rgba)
     if arguments.verify:
         verify_linearity(profiles)
