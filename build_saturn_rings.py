@@ -30,6 +30,13 @@ and hand-cleaned in the gaps; `color` is a per-radius tint from a Cassini colour
 image, normalized to peak 1. Rendering the rings needs all of them together, which is
 what this bakes.
 
+`color` is the one of the five that is not a measurement of the quantity it stands for.
+Joensson describes it as a Cassini image "with the saturation reduced", so it carries the
+radial ORDERING -- the A and B rings redder than the C ring and the Cassini Division --
+and neither a white balance nor the size of the variation. `--color-gain` supplies the
+first and `--color-profile` replaces the whole tint with one measured from Cassini VIMS
+spectra; ivoyager_assets_build's `saturn_rings_radial_color.py` writes that file.
+
 WHAT THE FILE MEANS, AND WHY THAT IS NOT WHAT THE OLD ONE MEANT
 ---------------------------------------------------------------
 THE PROFILES ARE PREMULTIPLIED, AND THE SOURCE SAYS SO IN THE DATA. A brightness
@@ -452,7 +459,23 @@ def slab_geometry(tau, mu, mu0, lit, clumping=np.inf):
                                - beam_transmission(tau, 1.0 / mu, clumping))
 
 
-def build_rgba(profiles, geometry, clumping, pedestals):
+def unlit_tint(color, measured):
+    """The unlit face's chromaticity, at Joensson's own unlit luma.
+
+    The stored quantity is the particles' scattering strength, and its colour is theirs
+    -- the same material whichever side of the layer you stand on. Measured, the two
+    agree: over every radius where the unlit-side VIMS scan reaches, its chromaticity
+    is within 5 % of the lit-side scan's. Joensson published no colour profile for that
+    face, so his flat UNLIT_COLOR stands in when there is no measured one; a measured
+    profile fills the hole. Rescaling to UNLIT_COLOR's own luma is what keeps this a
+    colour change: the unlit LEVEL is anchored through that luma.
+    """
+    if not measured:
+        return UNLIT_COLOR
+    return color * ((UNLIT_COLOR @ LUMA) / (color @ LUMA))[:, None]
+
+
+def build_rgba(profiles, geometry, clumping, pedestals, measured_color=False):
     """The (3, width, 4) array the file holds: one row per layer, rgb the scattering
     strength left when the observing geometry is divided out, alpha the occluded
     fraction at normal incidence.
@@ -468,7 +491,8 @@ def build_rgba(profiles, geometry, clumping, pedestals):
     transparency = profiles["transparency"]
     tau = optical_depth(transparency)
     empty = transparency >= 1.0  # no material: the quotient is 0/0, and the answer is 0
-    tints = (profiles["color"], profiles["color"], UNLIT_COLOR)
+    tints = (profiles["color"], profiles["color"],
+             unlit_tint(profiles["color"], measured_color))
     rgba = np.empty((3, transparency.size, 4), dtype=np.float32)
     lit_strength = None
     for index, name in enumerate(LAYERS):
@@ -647,6 +671,13 @@ def main():
                         help="gamma shape of the optical depth across the beam; "
                              "the default is the homogeneous limit, and nothing in "
                              "these profiles constrains it (see the header)")
+    parser.add_argument("--color-profile", type=Path, default=None,
+                        help="an alternative per-radius RGB tint, same shape as the "
+                             "source `color` file. Joensson's is a Cassini image with "
+                             "the saturation reduced, so its radial ordering is a "
+                             "measurement and the size of the variation is not; "
+                             "ivoyager_assets_build's saturn_rings_radial_color.py "
+                             "writes one measured from Cassini VIMS instead.")
     parser.add_argument("--color-gain", type=float, nargs=3, metavar=("R", "G", "B"),
                         default=None,
                         help="per-channel white balance for the stored strength. The "
@@ -664,14 +695,31 @@ def main():
                  f"Download the five .txt profiles from https://bjj.mmedia.is/data/s_rings/ "
                  f"into that directory.")
     profiles, width = read_profiles(arguments.source_dir)
+    if arguments.color_profile:
+        tint = np.array([float(value) for value
+                         in arguments.color_profile.read_text().split()]).reshape(-1, 3)
+        if len(tint) != width:
+            sys.exit(f"{arguments.color_profile} has {len(tint)} rows, "
+                     f"the profiles have {width}")
+        # The tint is not a pure chromaticity -- it multiplies the brightness profile, so
+        # its per-row LUMA is part of the level. A replacement that changes that changes
+        # the radial brightness too, which is not what a colour profile is for.
+        drift = np.abs(tint @ LUMA - profiles["color"] @ LUMA).max()
+        if drift > 1e-6:
+            sys.exit(f"{arguments.color_profile} moves the per-row luma by up to "
+                     f"{drift:.2e}, so it would move the level as well as the colour")
+        profiles["color"] = tint
     print(f"Saturn rings, from {arguments.source_dir}:")
+    if arguments.color_profile:
+        print(f"  colour profile: {arguments.color_profile}")
     print("  observing geometry, pinned and fitted:")
     clumping = arguments.clumping
     geometry, pedestals = fit_reference_geometry(
             profiles, arguments.reference_opening, arguments.forward_reference_opening,
             clumping)
     print("  scattering strength, with that geometry divided out:")
-    rgba = build_rgba(profiles, geometry, clumping, pedestals)
+    rgba = build_rgba(profiles, geometry, clumping, pedestals,
+                      measured_color=bool(arguments.color_profile))
     if arguments.color_gain:
         radius = INNER_RADIUS_KM + np.arange(width) * (
             (OUTER_RADIUS_KM - INNER_RADIUS_KM) / (width - 1))
