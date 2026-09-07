@@ -525,6 +525,32 @@ def build_rgba(profiles, geometry, clumping, pedestals):
     return rgba
 
 
+LUMA = np.array([0.2126, 0.7152, 0.0722])
+
+
+def apply_color_gain(rgba, gain, radius_weight):
+    """White-balance the stored strength, holding its level exactly.
+
+    Joensson's `color` profile is peak-normalized in every one of its rows, so it carries
+    the ring's radial colour ORDERING and no white balance at all -- which is why the
+    asset rendered bluer than the Sun until this existed. The correction is one
+    per-channel gain: the file is a chromaticity per radius times a scalar brightness, so
+    a gain moves the balance and leaves every radial ratio untouched.
+
+    It is renormalized here so the area-weighted mean luma comes back exactly, because
+    `scattering_scale` is anchored on published photometry through a luma-weighted
+    integral and a colour change must not move a level. The caller therefore supplies a
+    DIRECTION and gets a pure rotation of the colour, whatever it passes.
+    """
+    gain = np.asarray(gain, dtype=np.float64)
+    before = float((rgba[..., :3] @ LUMA * radius_weight).sum())
+    out = rgba.copy()
+    out[..., :3] *= gain
+    after = float((out[..., :3] @ LUMA * radius_weight).sum())
+    out[..., :3] *= before / after
+    return out, gain * before / after
+
+
 def report(profiles, width, rgba):
     radius = INNER_RADIUS_KM + np.arange(width) * (
         (OUTER_RADIUS_KM - INNER_RADIUS_KM) / (width - 1))
@@ -621,6 +647,13 @@ def main():
                         help="gamma shape of the optical depth across the beam; "
                              "the default is the homogeneous limit, and nothing in "
                              "these profiles constrains it (see the header)")
+    parser.add_argument("--color-gain", type=float, nargs=3, metavar=("R", "G", "B"),
+                        default=None,
+                        help="per-channel white balance for the stored strength. The "
+                             "source `color` profile is peak-normalized per row, so it "
+                             "carries the radial ordering and no white balance; this "
+                             "supplies one. Renormalized to hold the area-weighted mean "
+                             "luma, so it can never move the level.")
     parser.add_argument("--verify", action="store_true",
                         help="also refit the slab model and re-read the written file")
     parser.add_argument("--dry-run", action="store_true", help="report without writing")
@@ -639,6 +672,15 @@ def main():
             clumping)
     print("  scattering strength, with that geometry divided out:")
     rgba = build_rgba(profiles, geometry, clumping, pedestals)
+    if arguments.color_gain:
+        radius = INNER_RADIUS_KM + np.arange(width) * (
+            (OUTER_RADIUS_KM - INNER_RADIUS_KM) / (width - 1))
+        was = rgba[0, :, :3].sum(axis=0)
+        rgba, applied = apply_color_gain(rgba, arguments.color_gain, radius)
+        now = rgba[0, :, :3].sum(axis=0)
+        print(f"  colour: gain {arguments.color_gain} applied as "
+              f"{applied[0]:.4f} {applied[1]:.4f} {applied[2]:.4f} after holding luma; "
+              f"layer 0 area-weighted R/B {was[0] / was[2]:.4f} -> {now[0] / now[2]:.4f}")
     report(profiles, width, rgba)
     if arguments.verify:
         verify_linearity(profiles)
