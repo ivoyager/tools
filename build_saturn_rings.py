@@ -417,7 +417,8 @@ def scan_unlit_camera(model, tau, net, clumping):
 
 
 def fit_reference_geometry(profiles, opening_deg, forward_opening_deg, clumping,
-                           unlit_opening_deg=None, pedestal_depth=None):
+                           unlit_opening_deg=None, pedestal_depth=None,
+                           sun_deg=None, forward_sun_deg=None):
     """The geometry each published profile describes, and the clumping that lets a real one
     explain it. Returns (layer -> (mu, mu0), clumping, layer -> pedestal); see
     RE-REFERENCING.
@@ -502,17 +503,24 @@ def fit_reference_geometry(profiles, opening_deg, forward_opening_deg, clumping,
     # BELOW the 1/mu0 their own encounter demands, so it is not a geometry at all; what it
     # absorbs is the radial variation of particle albedo. The R2 reported here is therefore
     # the residual at the pinned geometry, not a goodness of fit that chose it.
-    for name, opening in zip(LAYERS[:2], (opening_deg, forward_opening_deg)):
+    for name, opening, sun in zip(LAYERS[:2], (opening_deg, forward_opening_deg),
+                                  (sun_deg, forward_sun_deg)):
         observed = profiles[name][measured]
         mu = np.sin(np.radians(opening))
-        k = 2.0 / mu
+        # The camera and the sun are two different elevations, and only where they are
+        # given as one does mu0 fall back to mu. What the radial shape determines is
+        # k = 1/mu + 1/mu0 and nothing else, so the pair matters through k; the
+        # prefactor mu0/(mu+mu0) it also changes is a level, and the magnitude anchor
+        # takes that back out.
+        mu0 = mu if sun is None else np.sin(np.radians(sun))
+        k = 1.0 / mu + 1.0 / mu0
         (level,), _ = curve_fit(
             lambda t, level, k=k: level * (1.0 - beam_transmission(t, k, clumping)),
             x, observed, p0=[0.85], maxfev=200000)
         r_squared = 1.0 - (observed - level * (1.0 - beam_transmission(x, k, clumping))
                            ).var() / observed.var()
-        geometry[name] = (mu, mu, True)
-        report(name, r_squared, mu, mu)
+        geometry[name] = (mu, mu0, True)
+        report(name, r_squared, mu, mu0)
 
     # WHICH LEG IS THE SUN'S is not something the fit can tell -- swapping mu and mu0
     # multiplies the term by mu/mu0 and leaves its SHAPE identical, so the radial data
@@ -778,6 +786,16 @@ def main():
                         help="the same for the FORWARDSCATTER profile (default 3.1: "
                              "Voyager 1, November 1980, and the unlit profile fits its own "
                              "sun leg at 2.7 from the same encounter)")
+    parser.add_argument("--reference-sun", type=float, default=None,
+                        help="elevation of the SUN, in degrees, for the backscatter "
+                             "reference. Defaults to the camera's, which is what a single "
+                             "opening angle standing for both legs means.")
+    parser.add_argument("--forward-reference-sun", type=float, default=None,
+                        help="the same for the FORWARDSCATTER reference. Voyager 1's "
+                             "trajectory puts the sun at 3.94 deg through the encounter "
+                             "while the camera reaches the stated phase of 139 deg at "
+                             "12.35 deg, so for that profile the two legs are not one "
+                             "number (ivoyager_assets_build's voyager1_elevation.py).")
     parser.add_argument("--pedestal-depth", type=float, default=None,
                         help="optical depth past which the UNLIT profile is taken to "
                              "have reached its source image's background. Measured when "
@@ -872,7 +890,8 @@ def main():
     clumping = arguments.clumping
     geometry, pedestals = fit_reference_geometry(
             profiles, arguments.reference_opening, arguments.forward_reference_opening,
-            clumping, arguments.unlit_reference_opening, arguments.pedestal_depth)
+            clumping, arguments.unlit_reference_opening, arguments.pedestal_depth,
+            arguments.reference_sun, arguments.forward_reference_sun)
     print("  scattering strength, with that geometry divided out:")
     rgba = build_rgba(profiles, geometry, clumping, pedestals,
                       measured_color=bool(arguments.color_profile))
