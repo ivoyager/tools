@@ -30,6 +30,17 @@ and hand-cleaned in the gaps; `color` is a per-radius tint from a Cassini colour
 image, normalized to peak 1. Rendering the rings needs all of them together, which is
 what this bakes.
 
+`transparency` is the one of the five that is a LOWER BOUND rather than a value over
+the material that matters most. An occultation stops measuring where the transmitted
+signal reaches its own noise, and 500 of its radii are exactly 0 -- a floor, not a
+measurement -- with a finite maximum of 5.552. That is invisible on the lit face, where
+anything past tau ~1.5 is saturated, and it is everything on the unlit one, which is
+exponential in tau. `--transparency-profile` replaces it with one measured from Cassini
+UVIS stellar occultations, which reach a stated ceiling of 6.6 over the B ring against
+the shipped profile's 2.2-equivalent; ivoyager_assets_build's
+`saturn_rings_optical_depth.py` writes that file. The B ring goes 2.0x deeper at the
+median and 3.0x at p90, which is what the PIA08840 registration independently asks for.
+
 `color` is the one of the five that is not a measurement of the quantity it stands for.
 Joensson describes it as a Cassini image "with the saturation reduced", so it carries the
 radial ORDERING -- the A and B rings redder than the C ring and the Cassini Division --
@@ -309,7 +320,41 @@ def _fit_unlit(model, tau, observed, shape):
     return level, a, b
 
 
-def measure_pedestal(values, tau, deep=1.4):
+FLATNESS = 1.10  # the octave spread at which a profile counts as having gone flat
+
+
+def _octave_medians(values, tau, deep):
+    """Median level over [deep, 2deep), [2deep, 4deep), [4deep, inf)."""
+    octaves, edges = [], [deep, deep * 2.0, deep * 4.0, np.inf]
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        band = (tau >= lo) & (tau < hi)
+        if band.sum() > 20:
+            octaves.append((lo, hi, int(band.sum()), float(np.median(values[band]))))
+    return octaves
+
+
+def find_flat_depth(values, tau):
+    """The depth past which the profile has stopped falling, MEASURED not assumed.
+
+    The threshold is a property of the optical depth SCALE, so it cannot be a constant:
+    the same physical radii carry twice the depth once a saturating occultation is
+    replaced by one that reaches the B ring, and a threshold left at the old scale then
+    takes the pedestal over radii that still carry real signal. Scanned on the shipped
+    Voyager profile this returns 1.16 against the 1.4 that was hand-chosen for it, and
+    on the Cassini UVIS profile 2.33.
+    """
+    for deep in (0.5 * 1.15 ** step for step in range(24)):
+        octaves = _octave_medians(values, tau, deep)
+        if len(octaves) < 2:
+            break
+        levels = [octave[3] for octave in octaves]
+        if max(levels) / max(min(levels), 1e-9) <= FLATNESS:
+            return deep
+    sys.exit("the unlit profile never goes flat against optical depth; it cannot be "
+             "carrying a background, so the pedestal subtraction does not apply")
+
+
+def measure_pedestal(values, tau, deep=None):
     """The profile's own background: the level it stops falling at, with the evidence.
 
     A transmitted-light profile must keep falling as tau rises; one that goes flat has
@@ -317,17 +362,17 @@ def measure_pedestal(values, tau, deep=1.4):
     rather than ring light. What is returned is the MINIMUM over the flat part, so
     nothing real is subtracted anywhere.
     """
-    octaves, edges = [], [deep, deep * 2.0, deep * 4.0, np.inf]
-    for lo, hi in zip(edges[:-1], edges[1:]):
-        band = (tau >= lo) & (tau < hi)
-        if band.sum() > 20:
-            octaves.append((lo, hi, int(band.sum()), float(np.median(values[band]))))
+    measured = deep is None
+    if measured:
+        deep = find_flat_depth(values, tau)
+    octaves, edges = _octave_medians(values, tau, deep), None
     flat = tau >= deep
     pedestal = float(values[flat].min())
     levels = [octave[3] for octave in octaves]
     span = max(levels) / max(min(levels), 1e-9)
     lines = [f"pedestal {pedestal:.4f}, the minimum over {int(flat.sum())} radii at "
-             f"tau >= {deep} where the profile has stopped falling:"]
+             f"tau >= {deep:.2f} ({'measured' if measured else 'pinned'}) "
+             f"where the profile has stopped falling:"]
     for lo, hi, count, median in octaves:
         lines.append(f"      tau {lo:>5.1f} to {hi:>5.1f}  n={count:>5}  "
                      f"median {median:.4f}")
@@ -346,7 +391,33 @@ def sample_run_length(values):
     return int(np.median(np.diff(change))) | 1  # odd, for a centred box
 
 
-def fit_reference_geometry(profiles, opening_deg, forward_opening_deg, clumping):
+def scan_unlit_camera(model, tau, net, clumping):
+    """Residual across the whole range of camera elevations, sun leg free at each.
+
+    The unlit fit determines the camera leg only while the profile still carries signal
+    at depths where exp(-tau/mu) discriminates between elevations. With the shipped
+    Voyager profile it did, weakly, peaking near 39 deg; with a profile that reaches the
+    real B ring the camera leg's exponential is under the source's own background over
+    all of it and the residual goes flat. Printing the scan is what keeps a plateau from
+    being reported as a measurement.
+    """
+    scan = []
+    for degrees in (20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 89.0):
+        mu = np.sin(np.radians(degrees))
+        best = -np.inf
+        for sun in np.arange(0.5, 12.01, 0.25):
+            mu0 = np.sin(np.radians(sun))
+            if abs(mu0 - mu) < 1e-6:
+                continue
+            term = model(tau, 1.0 / mu, 1.0 / mu0, clumping)
+            level = np.dot(term, net) / max(np.dot(term, term), 1e-30)
+            best = max(best, 1.0 - (net - level * term).var() / net.var())
+        scan.append((degrees, best))
+    return scan
+
+
+def fit_reference_geometry(profiles, opening_deg, forward_opening_deg, clumping,
+                           unlit_opening_deg=None, pedestal_depth=None):
     """The geometry each published profile describes, and the clumping that lets a real one
     explain it. Returns (layer -> (mu, mu0), clumping, layer -> pedestal); see
     RE-REFERENCING.
@@ -376,7 +447,7 @@ def fit_reference_geometry(profiles, opening_deg, forward_opening_deg, clumping)
     # only where it survives that subtraction by a clear margin; past there the source
     # measured its own background, and residual noise about zero would drag the geometry
     # and the clumping toward whatever shape happens to fit it.
-    pedestal, pedestal_report = measure_pedestal(observed, x)
+    pedestal, pedestal_report = measure_pedestal(observed, x, pedestal_depth)
     print(f"    {pedestal_report}")
     net = observed - pedestal
     live = net > 2.0 * pedestal
@@ -399,7 +470,30 @@ def fit_reference_geometry(profiles, opening_deg, forward_opening_deg, clumping)
     print(f"    clumping is PINNED at {clumping:g}; scanned, this profile does not "
           f"constrain it -- R2 moves {span:.4f} across the family "
           + ", ".join(f"({s:g}: {r:.4f})" for s, r in scan))
-    level, a, b = _fit_unlit(unlit_model, x[live], net[live], clumping)
+    # a is the CAMERA leg and b the SUN's: the model is beam(a) - beam(b), positive
+    # only for a < b, and `mu0, mu = 1/max(a, b), 1/min(a, b)` below reads it that way.
+    def rate_model(t, rate_camera, rate_sun, shape):
+        return (beam_transmission(t, rate_camera, shape)
+                - beam_transmission(t, rate_sun, shape))
+
+    camera_scan = scan_unlit_camera(rate_model, x[live], net[live], clumping)
+    best = max(r for _, r in camera_scan)
+    plateau = [d for d, r in camera_scan if best - r <= 0.005]
+    print("    camera elevation, scanned with the sun leg free at each: "
+          + ", ".join(f"({d:g}: {r:.4f})" for d, r in camera_scan))
+    if unlit_opening_deg is not None:
+        a = 1.0 / np.sin(np.radians(unlit_opening_deg))
+        (level, b), _ = curve_fit(
+            lambda t, lv, bb, camera=a: lv * rate_model(t, camera, bb, clumping),
+            x[live], net[live], p0=[1.0, 20.0],
+            bounds=([0.05, 1.0], [20.0, 400.0]), maxfev=400000)
+        print(f"    camera elevation PINNED at {unlit_opening_deg:g} deg")
+    else:
+        level, a, b = _fit_unlit(unlit_model, x[live], net[live], clumping)
+        if len(plateau) > 2:
+            print(f"    WARNING: the residual is flat to 0.005 across "
+                  f"{min(plateau):g}-{max(plateau):g} deg, so this fit is NOT measuring "
+                  f"the camera elevation -- pin it with --unlit-reference-opening")
     unlit_r_squared = 1.0 - (net[live] - unlit_model(x[live], level, a, b, clumping)).var() \
             / net[live].var()
 
@@ -502,7 +596,20 @@ def build_rgba(profiles, geometry, clumping, pedestals, measured_color=False):
         term = uniform_filter1d(slab_geometry(tau, *geometry[name], clumping=clumping),
                                 width, mode="nearest")
         usable = ~empty & (term > 0.0) & (observed > 2.0 * pedestal)
-        strength = np.where(usable, observed / np.maximum(term, 1e-30), 0.0)
+        quotient = observed / np.maximum(term, 1e-30)
+        dead = 0
+        if pedestal > 0.0:
+            # A radius where the model, AT THIS PROFILE'S OWN MEDIAN STRENGTH, cannot
+            # reach the source's background is not measuring ring light: the quotient is
+            # one near-zero over another, and it runs to 300x the median. Invisible while
+            # the transparency profile saturated -- it capped tau, so it capped how small
+            # the transmitted term could get -- and it is the deep B ring, which is
+            # exactly what a profile that reaches the real depths exposes. These adjoin
+            # the radii the pedestal already left dead and take the same fallback.
+            live = usable & (float(np.median(quotient[usable])) * term >= pedestal)
+            dead = int((usable & ~live).sum())
+            usable = live
+        strength = np.where(usable, quotient, 0.0)
         note = ""
         if pedestal > 0.0 and lit_strength is not None:
             # The ratio to layer 0 does two jobs and is NOT one number, so it is measured
@@ -539,6 +646,10 @@ def build_rgba(profiles, geometry, clumping, pedestals, measured_color=False):
         elif index == 0:
             lit_strength = strength
         stray = int((profiles[name][empty] != 0.0).sum())
+        if dead:
+            note = (f"\n    {'':16} {dead} radii where the model cannot reach the "
+                    f"pedestal at the profile's own median strength take the fallback "
+                    f"too: there the quotient is one near-zero over another") + note
         print(f"    {name:<16} smoothed over {width} samples ({width * 5} km); "
               f"strength median {np.median(strength[~empty]):.3f}, "
               f"p99.9 {np.percentile(strength[~empty], 99.9):.3f}, max {strength.max():.2f}"
@@ -667,10 +778,32 @@ def main():
                         help="the same for the FORWARDSCATTER profile (default 3.1: "
                              "Voyager 1, November 1980, and the unlit profile fits its own "
                              "sun leg at 2.7 from the same encounter)")
+    parser.add_argument("--pedestal-depth", type=float, default=None,
+                        help="optical depth past which the UNLIT profile is taken to "
+                             "have reached its source image's background. Measured when "
+                             "not given, which is what it has to be: the threshold is a "
+                             "property of the depth SCALE, so replacing a saturating "
+                             "occultation moves it (1.16 on the shipped Voyager profile, "
+                             "2.33 on the Cassini UVIS one).")
+    parser.add_argument("--unlit-reference-opening", type=float, default=None,
+                        help="ring elevation, in degrees, the UNLIT profile's CAMERA was "
+                             "at. Fitted when not given -- but with a transparency "
+                             "profile that reaches the real B ring the residual goes flat "
+                             "across the whole range and the fit measures nothing, which "
+                             "the printed scan shows.")
     parser.add_argument("--clumping", type=float, default=HOMOGENEOUS,
                         help="gamma shape of the optical depth across the beam; "
                              "the default is the homogeneous limit, and nothing in "
                              "these profiles constrains it (see the header)")
+    parser.add_argument("--transparency-profile", type=Path, default=None,
+                        help="an alternative transmission profile, same length as the "
+                             "source `transparency` file. Joensson's is the Voyager "
+                             "occultation, which saturates over the B ring and floors "
+                             "500 radii at zero; ivoyager_assets_build's "
+                             "saturn_rings_optical_depth.py writes one measured from "
+                             "Cassini UVIS instead. Must name the same empty radii, "
+                             "since the brightness profiles are premultiplied against "
+                             "those.")
     parser.add_argument("--color-profile", type=Path, default=None,
                         help="an alternative per-radius RGB tint, same shape as the "
                              "source `color` file. Joensson's is a Cassini image with "
@@ -695,6 +828,27 @@ def main():
                  f"Download the five .txt profiles from https://bjj.mmedia.is/data/s_rings/ "
                  f"into that directory.")
     profiles, width = read_profiles(arguments.source_dir)
+    if arguments.transparency_profile:
+        replacement = np.array([float(value) for value
+                                in arguments.transparency_profile.read_text().split()])
+        if len(replacement) != width:
+            sys.exit(f"{arguments.transparency_profile} has {len(replacement)} rows, "
+                     f"the profiles have {width}")
+        # The three brightness layers are premultiplied against the EMPTY set of the
+        # profile they shipped with -- brightness is exactly 0 where transparency is
+        # exactly 1 -- so a replacement may only ADD empty radii. Dropping one would put
+        # occlusion where there is no light to occlude; adding one only zeroes light the
+        # replacement says has no material behind it, which the stray count below reports.
+        was_empty = profiles["transparency"] >= 1.0
+        lost = int((was_empty & (replacement < 1.0)).sum())
+        if lost:
+            sys.exit(f"{arguments.transparency_profile} puts material at {lost} radii the "
+                     f"brightness profiles call empty, and they cannot light it")
+        gained = int(((replacement >= 1.0) & ~was_empty).sum())
+        if gained:
+            print(f"  transparency profile calls {gained} further radii empty; their "
+                  f"brightness is zeroed and counted as stray below")
+        profiles["transparency"] = replacement
     if arguments.color_profile:
         tint = np.array([float(value) for value
                          in arguments.color_profile.read_text().split()]).reshape(-1, 3)
@@ -710,13 +864,15 @@ def main():
                      f"{drift:.2e}, so it would move the level as well as the colour")
         profiles["color"] = tint
     print(f"Saturn rings, from {arguments.source_dir}:")
+    if arguments.transparency_profile:
+        print(f"  transparency profile: {arguments.transparency_profile}")
     if arguments.color_profile:
         print(f"  colour profile: {arguments.color_profile}")
     print("  observing geometry, pinned and fitted:")
     clumping = arguments.clumping
     geometry, pedestals = fit_reference_geometry(
             profiles, arguments.reference_opening, arguments.forward_reference_opening,
-            clumping)
+            clumping, arguments.unlit_reference_opening, arguments.pedestal_depth)
     print("  scattering strength, with that geometry divided out:")
     rgba = build_rgba(profiles, geometry, clumping, pedestals,
                       measured_color=bool(arguments.color_profile))
