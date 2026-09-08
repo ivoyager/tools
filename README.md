@@ -68,7 +68,7 @@ Two names are load-bearing and were both established empirically, so don't "corr
 
 ## Planetary rings
 
-`build_saturn_rings.py` bakes Bjoern Joensson's five radial ring profiles
+`build_saturn_rings.py` bakes Björn Jónsson's five radial ring profiles
 (https://bjj.mmedia.is/data/s_rings) into `rings/saturn.rings.<w>.exr` -- one file that
 imports as a `CompressedTexture2DArray` of three width x 1 layers (backscatter, forward
 scatter, unlit side), each holding linear scattering strength in rgb and the occluded

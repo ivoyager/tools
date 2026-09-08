@@ -4,7 +4,7 @@
 # Copyright 2019-2026 Charlie Whitfield
 # Licensed under the Apache License, Version 2.0 (the "License").
 # *****************************************************************************
-"""Build Saturn's ring texture from Bjoern Joensson's radial ring profiles.
+"""Build Saturn's ring texture from Bjorn Jonsson's radial ring profiles.
 
     source_data/rings/*.txt  ->  addons/ivoyager_assets/rings/saturn.rings.<w>.exr
 
@@ -23,7 +23,7 @@ ONE file, imported as a CompressedTexture2DArray of three <w> x 1 layers:
 
 Source: https://bjj.mmedia.is/data/s_rings/ -- five text files of 13177 values each,
 5.000 km apart, spanning 74510 to 140390 km from Saturn's centre. Three are radial
-brightness profiles Joensson measured in Voyager images (Voyager 2 NAC for
+brightness profiles Jonsson measured in Voyager images (Voyager 2 NAC for
 backscatter, Voyager 1 WAC for the other two); `transparency` is the Voyager stellar
 occultation normal optical depth from the PDS Rings Node, converted to transmission
 and hand-cleaned in the gaps; `color` is a per-radius tint from a Cassini colour
@@ -42,7 +42,7 @@ the shipped profile's 2.2-equivalent; ivoyager_assets_build's
 median and 3.0x at p90, which is what the PIA08840 registration independently asks for.
 
 `color` is the one of the five that is not a measurement of the quantity it stands for.
-Joensson describes it as a Cassini image "with the saturation reduced", so it carries the
+Jonsson describes it as a Cassini image "with the saturation reduced", so it carries the
 radial ORDERING -- the A and B rings redder than the C ring and the Cassini Division --
 and neither a white balance nor the size of the variation. `--color-gain` supplies the
 first and `--color-profile` replaces the whole tint with one measured from Cassini VIMS
@@ -54,7 +54,7 @@ THE PROFILES ARE PREMULTIPLIED, AND THE SOURCE SAYS SO IN THE DATA. A brightness
 profile is exactly 0 at all 1031 radii where transparency is exactly 1 -- material
 absent, not material dark -- so it is an observed image brightness that already
 carries the ring's own coverage, and the pair (brightness, 1 - transparency) is a
-premultiplied RGBA. Joensson's page says the same in words: "it's really not possible
+premultiplied RGBA. Jonsson's page says the same in words: "it's really not possible
 to use this data alone, you need the transparency profile as well". So the RENDERED
 value composites with `blend_premul_alpha` (radiance + T * background) and is never
 multiplied by alpha again -- that darkens every radius by its own opacity, which costs
@@ -219,7 +219,7 @@ sample at 74510 + 5 i km, so the texture's edges sit half a sample outside the
 table's own `inner_radius` and `outer_radius` and rings.gd derives that from the
 width it loads. The shader fades the last texel out over its own screen footprint.
 
-Radial resolution is Joensson's 5 km and is NOT resampled to a power of two: 13177
+Radial resolution is Jonsson's 5 km and is NOT resampled to a power of two: 13177
 samples mip to 14 levels perfectly well, and interpolating to 16384 would add a
 resampling generation for no information. Note that only `transparency` is really
 5 km data -- the three imaging profiles change every 6 to 12 samples, having been
@@ -242,7 +242,7 @@ SOURCE_DIR = Path(__file__).resolve().parent / "source_data" / "rings"
 OUT_DIR = Path("addons/ivoyager_assets/rings")
 NAME = "saturn.rings"
 
-# Joensson's own unlit-side colour; his colour profile is for the lit side only.
+# Jonsson's own unlit-side colour; his colour profile is for the lit side only.
 UNLIT_COLOR = np.array([1.0, 0.97075, 0.952])
 
 # The radial span the five files cover, from the source page. rings.tsv carries the
@@ -562,12 +562,12 @@ def slab_geometry(tau, mu, mu0, lit, clumping=np.inf):
 
 
 def unlit_tint(color, measured):
-    """The unlit face's chromaticity, at Joensson's own unlit luma.
+    """The unlit face's chromaticity, at Jonsson's own unlit luma.
 
     The stored quantity is the particles' scattering strength, and its colour is theirs
     -- the same material whichever side of the layer you stand on. Measured, the two
     agree: over every radius where the unlit-side VIMS scan reaches, its chromaticity
-    is within 5 % of the lit-side scan's. Joensson published no colour profile for that
+    is within 5 % of the lit-side scan's. Jonsson published no colour profile for that
     face, so his flat UNLIT_COLOR stands in when there is no measured one; a measured
     profile fills the hole. Rescaling to UNLIT_COLOR's own luma is what keeps this a
     colour change: the unlit LEVEL is anchored through that luma.
@@ -674,7 +674,7 @@ LUMA = np.array([0.2126, 0.7152, 0.0722])
 def apply_color_gain(rgba, gain, radius_weight):
     """White-balance the stored strength, holding its level exactly.
 
-    Joensson's `color` profile is peak-normalized in every one of its rows, so it carries
+    Jonsson's `color` profile is peak-normalized in every one of its rows, so it carries
     the ring's radial colour ORDERING and no white balance at all -- which is why the
     asset rendered bluer than the Sun until this existed. The correction is one
     per-channel gain: the file is a chromaticity per radius times a scalar brightness, so
@@ -815,7 +815,7 @@ def main():
                              "these profiles constrains it (see the header)")
     parser.add_argument("--transparency-profile", type=Path, default=None,
                         help="an alternative transmission profile, same length as the "
-                             "source `transparency` file. Joensson's is the Voyager "
+                             "source `transparency` file. Jonsson's is the Voyager "
                              "occultation, which saturates over the B ring and floors "
                              "500 radii at zero; ivoyager_assets_build's "
                              "saturn_rings_optical_depth.py writes one measured from "
@@ -824,7 +824,7 @@ def main():
                              "those.")
     parser.add_argument("--color-profile", type=Path, default=None,
                         help="an alternative per-radius RGB tint, same shape as the "
-                             "source `color` file. Joensson's is a Cassini image with "
+                             "source `color` file. Jonsson's is a Cassini image with "
                              "the saturation reduced, so its radial ordering is a "
                              "measurement and the size of the variation is not; "
                              "ivoyager_assets_build's saturn_rings_radial_color.py "
