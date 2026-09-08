@@ -99,7 +99,7 @@ file.
 
 ## Star field
 
-`build_star_binaries.py` bakes the ESA Hipparcos Main Catalogue (`hip_main.dat`, VizieR I/239) into the magnitude-binned `.ivbinary` point clouds that `IVStarsVisual` loads on init. Stdlib-only. Its magnitude bin edges must stay matched to `IVStarsVisual.BINARY_FILE_MAGNITUDES`.
+`build_star_binaries.py` bakes the ESA Hipparcos Main Catalogue (`hip_main.dat`, VizieR I/239) and the Tycho-2 Catalogue (`tyc2.dat.*`, `suppl_1.dat`, VizieR I/259) into the magnitude-binned `.ivbinary` point clouds that `IVStarsVisual` loads on init — 2.55M stars, Hipparcos winning wherever the two overlap because it alone carries a parallax. Stdlib-only; `--dry-run` reports without writing and `--no-tycho2` rebuilds the older Hipparcos-only set. Its magnitude bin edges and its packed record layout must both stay matched to `IVStarsVisual` (`BINARY_FILE_MAGNITUDES` and `_append_binary`); the docstring is the format specification.
 
 ## Asteroids
 
