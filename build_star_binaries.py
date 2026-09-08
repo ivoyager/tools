@@ -360,7 +360,7 @@ def main():
     parser.add_argument("--out-dir", default=None,
             help="output directory for .ivbinary files "
                  "(default: <project>/addons/ivoyager_assets/starmaps)")
-    parser.add_argument("--prefix", default="hipparcos_tycho2_stars",
+    parser.add_argument("--prefix", default="stars",
             help="output file basename prefix")
     parser.add_argument("--parallax-snr", type=float, default=5.0,
             help="min parallax/error for a true distance; below this a star uses the far shell")
