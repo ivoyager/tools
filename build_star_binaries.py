@@ -87,9 +87,9 @@ import sys
 
 from _project import project_dir
 
-# Length constants; match planetarium/units.gd and IVAstronomy.
-AU_M = 149597870700.0
-PARSEC_M = 648000.0 * AU_M / math.pi
+# No length unit appears in this file or in what it writes: distances are stored as
+# parsecs and parallaxes, and IVStarsVisual converts with IVUnits.PARSEC, which is
+# derived from the project's own METER. A project rescaling the sim rescales the stars.
 OBLIQUITY = math.radians(23.4392911)  # IVAstronomy.OBLIQUITY_OF_THE_ECLIPTIC (J2000)
 COS_OBL = math.cos(OBLIQUITY)
 SIN_OBL = math.sin(OBLIQUITY)
