@@ -93,6 +93,14 @@ takes the default):
                   sunlight THROUGH its air cannot have the air left out anyway  [-]
     shells        per-shell visibility by index, e.g. `1,0,1`; applied after
                   `hide_shells`
+    shell_spin    degrees east to turn a DRIFTING shell about the body's polar
+                  axis -- one whose shells.tsv `process` is `_rotate`, and only
+                  one: such a shell has no orientation to preserve, its angle
+                  being whatever accumulated against sim time, so a capture's
+                  frozen 0 is one arbitrary phase among many. Earth's cloud deck
+                  is the case, at 0.0003 deg/s (25.9 deg/day, 13.9 days a turn),
+                  which is what lets an icon choose which clouds sit over which
+                  land. A no-op on every body without such a shell        [0]
     width height  output size; a square one names the file `<prefix>.<size>.png`
                   and any other `<prefix>.<width>x<height>.png`  [256, 256]
     notes         ignored; keep the reason for a pose next to the pose
@@ -158,11 +166,12 @@ DEFAULTS = {
     "width": 256,
     "height": 256,
     "variant": "",
+    "shell_spin": 0.0,
     "hide_shells": [],
 }
 FLOAT_KEYS = ("longitude", "latitude", "fill", "zoom", "pan_x", "pan_y", "light_left",
               "light_up", "brightness", "ev", "ev_auto", "clip_limit", "camera_radii",
-              "auto_center", "exposure", "ambient", "env_ambient")
+              "auto_center", "exposure", "ambient", "env_ambient", "shell_spin")
 INT_KEYS = ("width", "height")
 
 POLL_INTERVAL = 0.2
@@ -256,6 +265,7 @@ def spec_to_params(spec, body_name, out_path):
         "width": spec["width"],
         "height": spec["height"],
         "hide_shell_tags": spec["hide_shells"],
+        "shell_spin": spec["shell_spin"],
     }
     if spec["shells"] is not None:
         params["shells"] = spec["shells"]
