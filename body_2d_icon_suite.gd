@@ -214,6 +214,7 @@ func _run_capture(body_name: StringName, params: Dictionary) -> void:
 	var aabb := _capturer.stage_visual(visual)
 	_hide_shells_by_tag(body_name, params.get("hide_shell_tags"))
 	_apply_shell_visibility(params.get("shells"))
+	_apply_shell_spin(body_name, params.get("shell_spin"))
 
 	var albedo := _read_float(params, "albedo", 0.0)
 	if albedo <= 0.0:
@@ -526,6 +527,31 @@ func _apply_shell_visibility(value: Variant) -> void:
 	var shells := _get_shells()
 	for index in mini(flags.size(), shells.size()):
 		shells[index].visible = _to_bool(flags[index], true)
+
+
+# Turns a drifting shell about the body's polar axis, degrees east.
+#
+# Only a shell whose shells.tsv 'process' is _rotate may be turned, and that is the whole
+# rule: such a shell has no orientation to preserve, its angle being whatever has piled up
+# against sim time since the run began, so the 0 a static preview freezes is one arbitrary
+# phase among many rather than a registration. A shell without it is fixed to the body, and
+# turning it would slide a map off the surface it was built against.
+#
+# Same call as IVShellsModel._rotate, so it inherits that convention exactly: an overlay
+# shell's own basis is a pure scale and its parent carries the body's model basis, which is
+# what makes rotate_y() the body's own polar axis.
+func _apply_shell_spin(body_name: StringName, value: Variant) -> void:
+	var degrees := _to_float(value, 0.0)
+	if is_zero_approx(degrees):
+		return
+	var asset_preloader: IVAssetPreloader = IVGlobal.program[&"AssetPreloader"]
+	var specs := asset_preloader.get_body_shell_specs(body_name)
+	var shells := _get_shells()
+	for index in mini(specs.size(), shells.size()):
+		var spec: Dictionary = specs[index]
+		if spec.get(&"process", &"") != &"_rotate":
+			continue
+		shells[index].rotate_y(deg_to_rad(degrees))
 
 
 # meter_albedo ahead of albedo, the order IVExposureManager._get_albedo() takes. An icon

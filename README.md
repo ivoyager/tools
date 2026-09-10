@@ -66,6 +66,47 @@ Two names are load-bearing and were both established empirically, so don't "corr
 
 **[SHADER_COMPILE_COST.md](https://github.com/ivoyager/ivoyager_core/blob/develop/SHADER_COMPILE_COST.md) in the Core plugin is the record** — what the numbers are, what drives them, what an edit to a given `.gdshaderinc` costs, and the traps this script exists to encode. Read it before acting on anything this prints.
 
+## Planetary rings
+
+`build_saturn_rings.py` bakes Björn Jónsson's five radial ring profiles
+(https://bjj.mmedia.is/data/s_rings) into `rings/saturn.rings.<w>.exr` -- one file that
+imports as a `CompressedTexture2DArray` of three width x 1 layers (backscatter, forward
+scatter, unlit side), each holding linear scattering strength in rgb and the occluded
+fraction at normal incidence in alpha. `rings.gdshader` samples it with one `textureLod`
+per layer.
+
+What the file holds is NOT the published brightness. A profile is an observation at one
+ring opening angle, so shipping it as-is freezes that geometry; the build divides each
+profile by the single-scattering slab's geometry term and stores what is left, which is a
+property of the particles, and the shader multiplies the term back at the angles it is
+rendering. The observing geometry is not published and is fitted from each profile's own
+optical-depth dependence -- and that the fit works is the check on the whole construction,
+the quotient coming out nearly flat across the C ring, the B ring, the Cassini Division and
+the A ring. Two derived values, `unlit_level` and `clumping`, have to reach the shader as
+well, and the run prints the cells
+
+Three more things are load-bearing and are argued in the script's docstring: the source
+profiles are **premultiplied** (a brightness profile is exactly 0 at every radius where the
+transparency is exactly 1), so the shader composites with `blend_premul_alpha` and must not
+multiply by alpha again; they are **linear**, which the script tests rather than assumes by
+fitting the single-scattering slab model both ways; and the file is **half float**, because
+an 8-bit one must either band the faint rings or let the engine average sRGB-encoded codes
+when it generates mipmaps -- and a distant ring is nothing but its own mip chain.
+
+`exr_writer.py` is the ~60-line uncompressed half-float EXR writer it uses, so the pipeline
+needs numpy, scipy and nothing else. `--verify` refits the model and re-reads the written
+file.
+
 ## Star field
 
-`build_star_binaries.py` bakes the ESA Hipparcos Main Catalogue (`hip_main.dat`, VizieR I/239) into the magnitude-binned `.ivbinary` point clouds that `IVStarsVisual` loads on init. Stdlib-only. Its magnitude bin edges must stay matched to `IVStarsVisual.BINARY_FILE_MAGNITUDES`.
+`build_star_binaries.py` bakes the ESA Hipparcos Main Catalogue (`hip_main.dat`, VizieR I/239) and the Tycho-2 Catalogue (`tyc2.dat.*`, `suppl_1.dat`, VizieR I/259) into the magnitude-binned `.ivbinary` point clouds that `IVStarsVisual` loads on init — 2.55M stars, Hipparcos winning wherever the two overlap because it alone carries a parallax. Stdlib-only; `--dry-run` reports without writing and `--no-tycho2` rebuilds the older Hipparcos-only set. Its magnitude bin edges and its packed record layout must both stay matched to `IVStarsVisual` (`BINARY_FILE_MAGNITUDES` and `_append_binary`); the docstring is the format specification.
+
+## Asteroids
+
+`build_asteroid_binaries.py` bakes AstDyS-2 osculating and synthetic proper elements (`allnum.cat`, `ufitobs.cat`, `all.syn`, `tno.syn`, `secres.syn`, `tro.syn`), plus asteroid names and discovery designations from the JPL Small-Body Database query API, into the group- and magnitude-binned `.ivbinary` point clouds that `IVBinaryAsteroidsBuilder` loads on init. Stdlib-only; `--fetch-sbdb` downloads both JPL snapshots, `--verify` runs the self-checks, `--dry-run` reports without writing.
+
+Three cross-file invariants it cannot import and so checks or reads instead. Its magnitude bin edges must stay matched to `IVBinaryAsteroidsBuilder.BINARY_FILE_MAGNITUDES` (`--verify` compares them). Group membership criteria, magnitude cutoffs and row order come from the Core plugin's `tables/small_bodies_groups.tsv` at build time, first row that passes, so retuning a group is a table edit and not a code edit. And Jupiter Trojan libration phase is solved against Jupiter's row in `tables/orbits.tsv`, whose mean-longitude polynomial `--verify` checks against JPL's published value.
+
+**AstDyS re-keys an asteroid when it is numbered, but republishes proper elements only every year or two.** A body numbered inside that window is in the catalogs under its number and in the `.syn` files under its discovery designation, so it matches neither — which costs a Trojan the libration elements that put it in a cloud at all, and it is discarded as a suspect rather than merely losing its precession rates. The SBDB designation snapshot closes the gap: it aliases a retired designation onto the numbered catalog row, and only where that designation is not itself a live key, so it can never displace a direct match. Against the June 2026 catalogs the June 2024 proper elements stranded 2926 Trojans this way.
+
+**AstDyS publishes `n` as the mean *longitude* rate.** Mean anomaly therefore advances at `n - g`, which the point shader applies and `IVSmallBodiesGroup.get_mean_anomaly_rate()` exposes. Reading `n` as the mean anomaly rate adds `g` to every asteroid's mean motion — negligible-looking at 0.02 % for the main belt, but for a resonant body `g` *is* the locking rate (`3*n_Jupiter - 2*n` for a Hilda), so it unlocks the group from its resonance entirely.
