@@ -448,11 +448,12 @@ def get_sim_data(gm_bodies, pos_queries, godot, project, refresh=False):
         from assistant_test import AssistantClient, GodotLauncher
         print(f"# querying sim: {len(missing_gm)} GM, {len(missing_pos)} positions "
               f"(launching {pathlib.Path(godot).name})...")
-        launcher = GodotLauncher(godot, project)
+        launcher = GodotLauncher(godot, project, port=0)
         launcher.start()
-        client = AssistantClient()
+        client = AssistantClient(port=launcher.port)
         try:
             client.connect()
+            launcher.check_instance(client)
             for _ in range(60):
                 if "result" in client.call("list_bodies", {"filter": "all"}):
                     break

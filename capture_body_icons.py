@@ -132,7 +132,7 @@ PROJECT_DIR = project_dir()
 # Reuse the assistant plugin's launcher + TCP client (its tools dir isn't a package).
 ASSISTANT_TOOLS = PROJECT_DIR / "addons" / "ivoyager_assistant" / "tools"
 sys.path.insert(0, str(ASSISTANT_TOOLS))
-from assistant_test import AssistantClient, GodotLauncher          # noqa: E402
+from assistant_test import DEFAULT_PORT, AssistantClient, GodotLauncher  # noqa: E402
 from orbit_accuracy_test import find_godot_executable              # noqa: E402
 
 SUITE_SCRIPT = "res://addons/tools/body_2d_icon_suite.gd"
@@ -375,7 +375,9 @@ def main():
     parser.add_argument("--launch", action="store_true", help="Launch Godot first")
     parser.add_argument("--godot", default=None, help="Path to the Godot executable")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=29071)
+    parser.add_argument("--port", type=int, default=None,
+                        help="Assistant port (default: %d, or a free one with --launch)"
+                             % DEFAULT_PORT)
     args = parser.parse_args()
 
     out_dir = pathlib.Path(args.out_dir) if args.out_dir else DEFAULT_OUT_DIR
@@ -392,11 +394,14 @@ def main():
         if args.launch:
             godot = args.godot or find_godot_executable(str(PROJECT_DIR))
             print(f"Launching {godot}")
-            launcher = GodotLauncher(godot, str(PROJECT_DIR))
+            launcher = GodotLauncher(godot, str(PROJECT_DIR), port=args.port or 0)
             launcher.start()
-        client = AssistantClient(host=args.host, port=args.port)
+        port = launcher.port if launcher else args.port or DEFAULT_PORT
+        client = AssistantClient(host=args.host, port=port)
         try:
             client.connect()
+            if launcher:
+                launcher.check_instance(client)
             wait_for_start(client)
             listing = call_checked(client, "list_icon_bodies")
             by_prefix = {row["prefix"]: row for row in listing["bodies"]}
