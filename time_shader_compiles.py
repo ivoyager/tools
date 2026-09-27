@@ -60,11 +60,18 @@ Usage (from the project directory, the one holding project.godot):
     python addons/tools/time_shader_compiles.py surface atmosphere_limb
     python addons/tools/time_shader_compiles.py --renderer forward_plus
     python addons/tools/time_shader_compiles.py --driver opengl3_angle
+    python addons/tools/time_shader_compiles.py --shaders-dir <copy> surface.cube
 
 Requires the sibling submodule addons/ivoyager_core (the shaders it measures) and a
 Godot executable; by default the newest Godot_v*_console.exe beside the project.
 Compatibility is the default renderer because it is the one that hurts, and the one
 the web export uses.
+
+--shaders-dir times a modified copy of the Core's shaders directory instead, which is how
+an edit is A/B'd before it is made. Time the two one run at a time, never side by side: a
+compile is CPU-bound, other processes compiling at the same time can double a figure, and
+of a pair run together the shorter finishes under the load while the longer then runs
+alone. Two compiles of the same code still differ by up to about 13 %.
 
 --driver decides which compiler actually sees the shader, and on the Compatibility
 renderer it matters as much as the renderer choice does. opengl3_angle runs it through
@@ -220,6 +227,10 @@ def main():
     parser.add_argument("--timeout", type=int, default=900,
                         help="seconds one shader may take before it is abandoned "
                              "(default: 900)")
+    parser.add_argument("--shaders-dir", type=pathlib.Path,
+                        help="time the shaders in this directory instead of the Core's -- "
+                             "a modified copy, to A/B an edit before making it (default: "
+                             "addons/ivoyager_core/shaders)")
     parser.add_argument("--keep", action="store_true",
                         help="keep the generated project and print its path")
     parser.add_argument("--list", action="store_true",
@@ -229,10 +240,10 @@ def main():
     args = parser.parse_args()
 
     project_dir = _project.project_dir()
-    shaders_dir = project_dir / SHADERS_SUBDIR
+    shaders_dir = args.shaders_dir or project_dir / SHADERS_SUBDIR
     if not shaders_dir.is_dir():
         sys.exit(f"No shaders at '{shaders_dir}'. This script needs the sibling "
-                 f"submodule addons/ivoyager_core.")
+                 f"submodule addons/ivoyager_core, or a --shaders-dir.")
     names = args.shaders or list_shaders(shaders_dir)
     if args.list:
         print("\n".join(list_shaders(shaders_dir)))
