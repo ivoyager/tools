@@ -486,9 +486,9 @@ def main():
                              " Jupiter 2.0). Requires --oblate-axes.")
     parser.add_argument("--oblate-axes", type=float, nargs=2, metavar=("EQUATORIAL", "POLAR"),
                         help="Body's equatorial and polar radii, any consistent unit. Only"
-                             " their ratio is used. Note the engine derives its polar radius"
-                             " as 3*m_radius - 2*e_radius, which may differ from the table's"
-                             " own polar_radius; match the engine.")
+                             " their ratio is used. Match the figure the engine renders,"
+                             " which is the body table's own equatorial_radius and"
+                             " polar_radius (IVBody.get_polar_radius()).")
     parser.add_argument("--out-dir", default=None)
     args = parser.parse_args()
 
