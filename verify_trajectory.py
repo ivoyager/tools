@@ -51,7 +51,7 @@ from horizons_trajectory import CRAFT, CENTER_BODY, PROJECT_DIR, date_to_jd, jd_
 # Reuse the assistant plugin's launcher + TCP client (its tools dir isn't a package).
 ASSISTANT_TOOLS = (PROJECT_DIR / "addons" / "ivoyager_assistant" / "tools")
 sys.path.insert(0, str(ASSISTANT_TOOLS))
-from assistant_test import AssistantClient, GodotLauncher          # noqa: E402
+from assistant_test import DEFAULT_PORT, AssistantClient, GodotLauncher  # noqa: E402
 from orbit_accuracy_test import find_godot_executable              # noqa: E402
 
 CONSOLE_ERROR_MARKERS = ("SCRIPT ERROR", "ERROR:", "Assertion failed",
@@ -112,7 +112,9 @@ def main():
     parser = argparse.ArgumentParser(description="Verify a spacecraft trajectory in-sim")
     parser.add_argument("craft", nargs="?", default="voyager_1")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=29071)
+    parser.add_argument("--port", type=int, default=None,
+                        help="Assistant port (default: %d, or a free one with --launch)"
+                             % DEFAULT_PORT)
     parser.add_argument("--launch", action="store_true")
     parser.add_argument("--godot", default=None)
     parser.add_argument("--project", default=".")
@@ -135,13 +137,16 @@ def main():
         if not godot:
             sys.exit("No Godot console executable found; use --godot PATH")
         print(f"Launching: {godot} --path {args.project}")
-        launcher = GodotLauncher(godot, args.project)
+        launcher = GodotLauncher(godot, args.project, port=args.port or 0)
         launcher.start()
 
-    client = AssistantClient(host=args.host, port=args.port)
+    port = launcher.port if launcher else args.port or DEFAULT_PORT
+    client = AssistantClient(host=args.host, port=port)
     try:
-        print(f"Connecting to {args.host}:{args.port}...")
+        print(f"Connecting to {args.host}:{port}...")
         client.connect()
+        if launcher:
+            launcher.check_instance(client)
         if not wait_until_ready(client):
             failures.append("simulator never reached ready state")
             raise RuntimeError("not ready")

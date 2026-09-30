@@ -529,29 +529,43 @@ func _apply_shell_visibility(value: Variant) -> void:
 		shells[index].visible = _to_bool(flags[index], true)
 
 
-# Turns a drifting shell about the body's polar axis, degrees east.
+# Poses a drifting shell about the body's polar axis, degrees east of the phase its map was
+# built at, whatever the capture's date.
 #
 # Only a shell whose shells.tsv 'process' is _rotate may be turned, and that is the whole
-# rule: such a shell has no orientation to preserve, its angle being whatever has piled up
-# against sim time since the run began, so the 0 a static preview freezes is one arbitrary
-# phase among many rather than a registration. A shell without it is fixed to the body, and
-# turning it would slide a map off the surface it was built against.
+# rule: such a shell has no orientation to preserve, its angle being wherever the sim clock
+# has carried it, so the 0 of its map is one arbitrary phase among many rather than a
+# registration. A shell without it is fixed to the body, and turning it would slide a map
+# off the surface it was built against.
+#
+# A built shell poses itself at the clock's phase, IVShellsModel.get_spin(), and a static
+# preview never moves it again, so the turn is taken from there. The same goes for shell 0's
+# cloud-shadow lookup, which was aimed at the deck's built phase and must follow it here or
+# the shadows are cast by clouds the icon does not show.
 #
 # Same call as IVShellsModel._rotate, so it inherits that convention exactly: an overlay
 # shell's own basis is a pure scale and its parent carries the body's model basis, which is
 # what makes rotate_y() the body's own polar axis.
 func _apply_shell_spin(body_name: StringName, value: Variant) -> void:
-	var degrees := _to_float(value, 0.0)
-	if is_zero_approx(degrees):
-		return
+	var spin := deg_to_rad(_to_float(value, 0.0))
 	var asset_preloader: IVAssetPreloader = IVGlobal.program[&"AssetPreloader"]
 	var specs := asset_preloader.get_body_shell_specs(body_name)
 	var shells := _get_shells()
 	for index in mini(specs.size(), shells.size()):
 		var spec: Dictionary = specs[index]
-		if spec.get(&"process", &"") != &"_rotate":
+		var process_args: Array = spec.get(&"process_args", [])
+		if spec.get(&"process", &"") != &"_rotate" or !process_args:
 			continue
-		shells[index].rotate_y(deg_to_rad(degrees))
+		var rate: float = process_args[0]
+		var built_spin := IVShellsModel.get_spin(rate)
+		shells[index].rotate_y(spin - built_spin)
+		var overrides: Dictionary = spec.get(&"overrides", {})
+		if !overrides.get(&"clouds_two_stream_map", false):
+			continue
+		var surface_material := shells[0].get_surface_override_material(0) as ShaderMaterial
+		if surface_material:
+			surface_material.set_shader_parameter(&"clouds_shadow_spin",
+					Vector2(cos(spin), sin(spin)))
 
 
 # meter_albedo ahead of albedo, the order IVExposureManager._get_albedo() takes. An icon
