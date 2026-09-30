@@ -21,7 +21,7 @@
 
 The GL Compatibility renderer compiles a shader program at first draw, on the main
 thread, synchronously -- so a shader's compile cost is a frame time, and the plugin's
-SHADER_COMPILE_PROFILING.md is the record of what that costs and what drives it. This
+GRAPHICS_PROFILING.md is the record of what that costs and what drives it. This
 script is how that record is remeasured. It reports, per shader, the frame in which
 a fresh material first draws (the four scene-shader variants at the default
 specialization mask plus the one actually requested), and the frame after the light
@@ -208,7 +208,7 @@ def main():
             description="Time each Core shader's from-scratch compile, one per process.",
             epilog="Reports the first-draw frame and the frame that follows hiding the "
                    "light, which is one further specialization. See "
-                   "addons/ivoyager_core/SHADER_COMPILE_PROFILING.md.")
+                   "addons/ivoyager_core/GRAPHICS_PROFILING.md.")
     parser.add_argument("shaders", nargs="*",
                         help="shader names without extension (default: all of them)")
     parser.add_argument("--renderer", default="gl_compatibility",
