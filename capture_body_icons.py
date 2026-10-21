@@ -324,12 +324,17 @@ def call_checked(client, method, params=None):
 
 
 def wait_for_start(client):
-    info = call_checked(client, "get_project_info")
-    if info.get("wait_for_start") and not info.get("started"):
-        call_checked(client, "start_game")
+    started = client.get("IVStateManager", "started")["started"]
+    if client.get("IVCoreSettings", "wait_for_start")["wait_for_start"] and not started:
+        deadline = time.time() + START_TIMEOUT
+        while not client.get("IVStateManager", "ok_to_start")["ok_to_start"]:
+            if time.time() > deadline:
+                raise RuntimeError("Simulator never became ready to start")
+            time.sleep(1.0)
+        client.invoke("IVStateManager", "start")
     deadline = time.time() + START_TIMEOUT
     while time.time() < deadline:
-        if call_checked(client, "get_state").get("started"):
+        if call_checked(client, "get_project_info").get("ready"):
             return
         time.sleep(1.0)
     raise RuntimeError("Simulator did not start")

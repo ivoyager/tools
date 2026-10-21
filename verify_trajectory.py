@@ -75,12 +75,26 @@ def checkpoints(craft_name):
     return points
 
 
-def wait_until_ready(client, attempts=60):
+def wait_until_ready(client, attempts=240):
     for _ in range(attempts):
-        if "result" in client.call("list_bodies", {"filter": "all"}):
+        if client.result("get_project_info").get("ready"):
             return True
         time_module.sleep(1.0)
     return False
+
+
+def body_address(body):
+    return {"class": "IVBody", "name": body}
+
+
+def position_km(client, body, seconds, km):
+    """[body]'s parent-relative position at [seconds] in km, or None on failure."""
+    response = client.call("call", {"object": body_address(body),
+                                    "method": "get_position_vector", "args": {"time": seconds}})
+    position = response.get("result")
+    if not position:
+        return None
+    return [component / km for component in position]
 
 
 def vector_length(vec):
@@ -91,18 +105,16 @@ def vector_sub(a, b):
     return [a[i] - b[i] for i in range(3)]
 
 
-def heliocentric(client, body, seconds, parent):
-    """Spacecraft heliocentric position at [seconds], using whichever segment is
+def heliocentric(client, body, seconds, parent, km):
+    """Spacecraft heliocentric position (km) at [seconds], using whichever segment is
     active there (parent-relative position + the parent's heliocentric position).
     Returns None on query failure."""
-    sc = client.call("get_body_position",
-                     {"name": body, "time": seconds}).get("result", {}).get("position")
+    sc = position_km(client, body, seconds, km)
     if not sc:
         return None
     if parent == "STAR_SUN":
         return sc
-    planet = client.call("get_body_position",
-                         {"name": parent, "time": seconds}).get("result", {}).get("position")
+    planet = position_km(client, parent, seconds, km)
     if not planet:
         return None
     return [sc[i] + planet[i] for i in range(3)]
@@ -151,12 +163,18 @@ def main():
             failures.append("simulator never reached ready state")
             raise RuntimeError("not ready")
 
-        info = client.call("get_project_info").get("result", {})
-        capabilities = info.get("capabilities", [])
-        can_set_time = "set_time" in capabilities
+        described = client.describe(widgets=False, actions=False)
+        timekeeper = described["objects"].get("Timekeeper")
+        can_set_time = timekeeper is not None and "set_time" not in timekeeper.get(
+            "unavailable", [])
+        km = client.get("IVUnits", "KM")["KM"] # sim units per km
 
-        spacecraft = client.call("list_bodies", {"filter": "spacecraft"}).get("result", {})
-        names = spacecraft.get("bodies", [])
+        spacecraft_flag = described["enums"]["IVBody.BodyFlags"]["BODYFLAGS_SPACECRAFT"]
+        bodies = [i["name"] for i in described["classes"].get("IVBody", {}).get("instances", [])]
+        responses = client.batch([("get", {"object": body_address(name), "properties": "flags"})
+                                  for name in bodies])
+        names = [name for name, response in zip(bodies, responses)
+                 if AssistantClient.check(response)["flags"] & spacecraft_flag]
         print(f"spacecraft bodies: {names}")
         if body not in names:
             failures.append(f"{body} not present in spacecraft list")
@@ -164,27 +182,26 @@ def main():
             if retired in names:
                 failures.append(f"retired placeholder {retired} still present")
 
-        if "error" in client.call("get_body_info", {"name": body}):
-            failures.append(f"get_body_info failed for {body}")
+        if "error" in client.call("get", {"object": body_address(body), "properties": "parent"}):
+            failures.append(f"no IVBody {body}")
 
         print(f"\n{'segment':<12} {'expected parent':<16} {'set_time parent':<16} "
-              f"{'|pos| (sim)':>14}  result")
+              f"{'|pos| (km)':>14}  result")
         print("-" * 72)
         distances = {}
         for seconds, expected_parent, label in points:
             # Geometry at the explicit sample epoch (correct per-segment evaluation).
-            position = client.call("get_body_position",
-                                   {"name": body, "time": seconds}).get("result", {}).get("position")
+            position = position_km(client, body, seconds, km)
             length = vector_length(position) if position else float("nan")
             distances[label] = length
 
             # Runtime parent swap: move the clock there, let a frame run, read parent.
             swap_parent = "n/a"
             if can_set_time:
-                client.call("set_time", {"time": seconds})
-                client.call("get_state")  # advance one frame so _process can swap
-                swap_parent = client.call("get_body_info",
-                                          {"name": body}).get("result", {}).get("parent", "?")
+                client.invoke("Timekeeper", "set_time", new_time=seconds)
+                time_module.sleep(0.1)  # let a frame run so _process can swap
+                parent = client.get(body_address(body), "parent")["parent"]
+                swap_parent = parent["name"] if parent else "?"
 
             ok = (math.isfinite(length) and length > 0.0
                   and (not can_set_time or swap_parent == expected_parent))
@@ -216,8 +233,9 @@ def main():
         print("-" * 56)
         for k in range(len(segments) - 1):
             t_boundary = jd_to_sim_seconds(date_to_jd(segments[k][3]))
-            before = heliocentric(client, body, t_boundary - 1.0, CENTER_BODY[segments[k][1]])
-            after = heliocentric(client, body, t_boundary + 1.0, CENTER_BODY[segments[k + 1][1]])
+            before = heliocentric(client, body, t_boundary - 1.0, CENTER_BODY[segments[k][1]], km)
+            after = heliocentric(client, body, t_boundary + 1.0, CENTER_BODY[segments[k + 1][1]],
+                                 km)
             label = f"{segments[k][0]} -> {segments[k + 1][0]}"
             enforced = is_fix_gaps_cruise(segments[k]) or is_fix_gaps_cruise(segments[k + 1])
             if before is None or after is None:
