@@ -133,7 +133,7 @@ PROJECT_DIR = project_dir()
 ASSISTANT_TOOLS = PROJECT_DIR / "addons" / "ivoyager_assistant" / "tools"
 sys.path.insert(0, str(ASSISTANT_TOOLS))
 from assistant_test import DEFAULT_PORT, AssistantClient, GodotLauncher  # noqa: E402
-from orbit_accuracy_test import find_godot_executable              # noqa: E402
+from godot_executable import find_godot_executable                # noqa: E402
 
 SUITE_SCRIPT = "res://addons/tools/body_2d_icon_suite.gd"
 SUITE_KEY = "Body2DIconSuite"
@@ -392,7 +392,9 @@ def main():
 
     with SuiteRegistration(OVERRIDE_CFG):
         if args.launch:
-            godot = args.godot or find_godot_executable(str(PROJECT_DIR))
+            godot = args.godot or find_godot_executable(str(PROJECT_DIR), on_message=print)
+            if not godot:
+                sys.exit("No Godot console executable of the project's major; use --godot PATH")
             print(f"Launching {godot}")
             launcher = GodotLauncher(godot, str(PROJECT_DIR), port=args.port or 0)
             launcher.start()

@@ -5,6 +5,14 @@ This file documents changes to [tools](https://github.com/ivoyager/tools).
 File format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [v0.0.3] - UNRELEASED
+
+Under development using Godot 4.7.2.
+
+### Changed
+* Scripts that launch Godot choose the newest console build of the project's Godot major with ivoyager_assistant's `tools/godot_executable.py` (v0.0.5), and stop rather than run another major; `time_shader_compiles.py` had taken the newest file on disk.
+
+
 ## [v0.0.2] - 2026-10-15
 
 Released using Godot 4.7.2. This release coincides with Core plugin release v0.2.1.

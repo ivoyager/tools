@@ -63,7 +63,8 @@ Usage (from the project directory, the one holding project.godot):
     python addons/tools/time_shader_compiles.py --shaders-dir <copy> surface.cube
 
 Requires the sibling submodule addons/ivoyager_core (the shaders it measures) and a
-Godot executable; by default the newest Godot_v*_console.exe beside the project.
+Godot executable; by default the newest build of the hosting project's Godot major
+beside it, chosen by addons/ivoyager_assistant/tools/godot_executable.py.
 Compatibility is the default renderer because it is the one that hurts, and the one
 the web export uses.
 
@@ -128,13 +129,17 @@ script = ExtResource("1")
 
 
 def find_godot(project_dir):
-    """Return the newest Godot_v*_console.exe beside the project, or exit saying so."""
-    candidates = sorted(project_dir.parent.glob("Godot_v*_console.exe"))
-    candidates += sorted(project_dir.parent.glob("godot*.console.exe"))
-    if not candidates:
-        sys.exit(f"No Godot console executable found in '{project_dir.parent}'.\n"
-                 f"Pass one with --godot.")
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    """Return the hosting project's Godot build beside it, or exit saying so."""
+    sys.path.insert(0, str(project_dir / "addons" / "ivoyager_assistant" / "tools"))
+    try:
+        from godot_executable import find_godot_executable
+    except ImportError:
+        sys.exit("Choosing a Godot build needs the sibling submodule "
+                 "addons/ivoyager_assistant. Pass one with --godot.")
+    godot = find_godot_executable(str(project_dir), on_message=print)
+    if not godot:
+        sys.exit("Pass a Godot console executable with --godot.")
+    return godot
 
 
 def read_shader_globals(project_dir):
@@ -222,8 +227,8 @@ def main():
                              "on Windows, and compiles the heavy shaders by a large "
                              "multiple over opengl3 on the same GPU")
     parser.add_argument("--godot", type=pathlib.Path,
-                        help="Godot executable (default: newest Godot_v*_console.exe "
-                             "beside the project)")
+                        help="Godot executable (default: the newest build of the "
+                             "project's Godot major beside the project)")
     parser.add_argument("--timeout", type=int, default=900,
                         help="seconds one shader may take before it is abandoned "
                              "(default: 900)")

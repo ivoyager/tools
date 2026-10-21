@@ -722,8 +722,8 @@ def main():
     godot = args.godot
     if args.pre_fix and godot is None:
         sys.path.insert(0, str(ASSISTANT_TOOLS))
-        from orbit_accuracy_test import find_godot_executable
-        godot = find_godot_executable(args.project)
+        from godot_executable import find_godot_executable
+        godot = find_godot_executable(args.project, on_message=print)
         if not godot:
             sys.exit("No Godot console executable found; pass --godot PATH")
 
