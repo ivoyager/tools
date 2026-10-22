@@ -1,4 +1,4 @@
-# body_2d_icon_suite.gd
+# body_2d_icon_capture.gd
 # This file is part of I, Voyager
 # https://ivoyager.dev
 # *****************************************************************************
@@ -17,16 +17,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # *****************************************************************************
-extends IVAssistantTestSuite
+class_name IVBody2DIconCapture
+extends RefCounted
 
-## Assistant API for batch-capturing body 2D icons; the in-sim half of
+## Batch-captures body 2D icons; the in-sim half of
 ## [code]addons/tools/capture_body_icons.py[/code], which is where the pose
 ## specification, the file naming and the deploy live.
 ##
 ## Requires [code]addons/ivoyager_core[/code] (for [IVBodyVisual] and
-## [IVBody2DCapturer]) and [code]addons/ivoyager_assistant[/code]. Register it in
-## [code]ivoyager_override2.cfg[/code] under [code][assistant_test_suites][/code];
-## the Python driver does that itself and undoes it at exit.[br][br]
+## [IVBody2DCapturer]). A client calls these members through the
+## [code]ivoyager_assistant[/code] plugin's [code]call[/code], addressing this object by
+## its role, "Body2DIconCapture", once it is in the program:
+## [code]program_refcounteds/Body2DIconCapture[/code] under
+## [code][core_initializer][/code] in [code]ivoyager_override2.cfg[/code]. The Python
+## driver adds that line itself and undoes it at exit. Every member waits for the
+## simulator to start.[br][br]
 ##
 ## A body is staged exactly as the simulator draws it — cube shaders, cloud and limb
 ## shells, band-pattern bodies and packed craft models all come through
@@ -37,9 +42,16 @@ extends IVAssistantTestSuite
 ## where it has one), which is what [IVExposureManager] settles a body's light energy
 ## to once it fills the view.[br][br]
 ##
-## Rendering needs frames, so a capture cannot answer within one JSON-RPC call:
-## [code]capture_body_icon[/code] starts one and returns immediately, and
-## [code]poll_icon_capture[/code] returns the result once it lands.
+## Rendering needs frames, so a capture cannot answer within one call:
+## [method capture_body_icon] starts one and returns immediately, and
+## [method poll_icon_capture] returns the result once it lands.
+
+const AUTOMATION_METHODS: Array[StringName] = [
+	&"list_icon_bodies",
+	&"capture_body_icon",
+	&"poll_icon_capture",
+	&"end_icon_capture",
+]
 
 ## Light energy is this over the body's albedo — superseded by
 ## [member IVExposureManager.metering_key] wherever the physical-light system is present.
@@ -82,6 +94,15 @@ const VIEW_ZOOM_RADII := 6.0
 ## nothing else: the fov below is solved to FRAME the body, so the focal length cancels out of
 ## the icon entirely and the distance alone sets the perspective.
 const VIEW_ZOOM_FOCAL_LENGTH := 24.0
+## The default of the optional array arguments. Godot reports only a constant as a
+## parameter's default, and a client can omit an argument before one it gives only where
+## the default is known.
+const EMPTY: Array = []
+
+# The Assistant's error codes (its SPECIFICATION.md section 3.3).
+const ERR_INVALID_PARAMS := 2
+const ERR_NOT_FOUND := 3
+const ERR_NOT_ALLOWED := 5
 
 var _capturer: IVBody2DCapturer
 var _viewport: SubViewport
@@ -104,38 +125,19 @@ var _capture_running := false
 var _capture_result: Dictionary
 
 
-func _on_about_to_free() -> void:
-	_free_rig()
+func _init() -> void:
+	IVStateManager.about_to_free_procedural_nodes.connect(_free_rig)
 
 
-func get_method_names() -> Array[String]:
-	return ["list_icon_bodies", "capture_body_icon", "poll_icon_capture", "end_icon_capture"]
+## Whether an automation client may use [param _member] now: every member waits for the
+## simulator to start.
+func is_automation_available(_member: StringName) -> bool:
+	return IVStateManager.started
 
 
-func get_method_summaries() -> Dictionary:
-	return {
-		"list_icon_bodies": "List capturable bodies with file prefix, albedo and model kind.",
-		"capture_body_icon": "Start one icon capture (returns at once; poll for the result).",
-		"poll_icon_capture": "Return the running capture's result once it has landed.",
-		"end_icon_capture": "Free the capture rig.",
-	}
-
-
-func dispatch(method: String, params: Dictionary) -> Variant:
-	match method:
-		"list_icon_bodies":
-			return _list_icon_bodies()
-		"capture_body_icon":
-			return _start_capture(params)
-		"poll_icon_capture":
-			return _poll_capture()
-		"end_icon_capture":
-			_free_rig()
-			return {"freed": true}
-	return {"_error": {"code": ERR_UNKNOWN_METHOD, "message": "Unknown method: %s" % method}}
-
-
-func _list_icon_bodies() -> Dictionary:
+## Capturable bodies, each with its file prefix, albedo, model kind, size and shell tags,
+## and the metering_key the captures are lit by.
+func list_icon_bodies() -> Dictionary:
 	const DISABLE_MODEL_SPACE := IVBody.BodyFlags.BODYFLAGS_DISABLE_MODEL_SPACE
 	var asset_preloader: IVAssetPreloader = IVGlobal.program[&"AssetPreloader"]
 	var rows: Array[Dictionary] = []
@@ -173,38 +175,90 @@ func _list_icon_bodies() -> Dictionary:
 	return {"bodies": rows, "metering_key": _get_metering_key()}
 
 
-func _poll_capture() -> Dictionary:
+## Starts one capture of [param body] to the PNG at [param out_path] and returns at once;
+## poll [method poll_icon_capture] for the result. A pose is the sub-camera
+## [param longitude] and [param latitude] in degrees, a screen [param roll] (or
+## [param auto_roll], laying an elongated body's long axis on the diagonal), and
+## [param fill], [param zoom] and [param pan] (frame fractions) for the framing.
+## capture_body_icons.py's module docstring specifies every argument, as the columns of
+## its pose table; [param hide_shell_tags] is its hide_shells, [param pan] its pan_x and
+## pan_y, and [param supersample], [param albedo] and [param metering_key] (0.0 takes the
+## body's own and the engine's) are set here only.
+func capture_body_icon(body: String, out_path: String, longitude := 0.0, latitude := 0.0,
+		roll := 0.0, auto_roll := false, fill := 1.0, zoom := 1.0, pan := Vector2.ZERO,
+		auto_center := true, light_left := 15.0, light_up := -10.0, brightness := 0.0,
+		ev := 0.0, ev_auto := false, clip_limit := 0.01, camera_radii := VIEW_ZOOM_RADII,
+		exposure := 0.0, ambient := 0.0, env_ambient := 0.0,
+		hide_shell_tags: Array = EMPTY, shells: Array = EMPTY, shell_spin := 0.0,
+		width := IVBody2DCapturer.ICON_SIZE, height := IVBody2DCapturer.ICON_SIZE,
+		supersample := DEFAULT_SUPERSAMPLE, albedo := 0.0, metering_key := 0.0
+		) -> Dictionary:
+	if _capture_running:
+		return _error(ERR_NOT_ALLOWED, "A capture is already running")
+	var body_name := StringName(body)
+	if !IVBody.bodies.has(body_name):
+		return _error(ERR_NOT_FOUND, "No body %s" % body_name)
+	if out_path.is_empty():
+		return _error(ERR_INVALID_PARAMS, "Missing out_path")
+	_capture_running = true
+	_capture_result = {}
+	# A render needs frames, so the capture runs on and publishes through _capture_result
+	# and _capture_running for poll_icon_capture to collect.
+	_run_capture(body_name, out_path, {
+		"longitude": longitude,
+		"latitude": latitude,
+		"roll": roll,
+		"auto_roll": auto_roll,
+		"fill": fill,
+		"zoom": zoom,
+		"pan": pan,
+		"auto_center": auto_center,
+		"light_left": light_left,
+		"light_up": light_up,
+		"brightness": brightness,
+		"ev": ev,
+		"ev_auto": ev_auto,
+		"clip_limit": clip_limit,
+		"camera_radii": camera_radii,
+		"exposure": exposure,
+		"ambient": ambient,
+		"env_ambient": env_ambient,
+		"hide_shell_tags": hide_shell_tags,
+		"shells": shells,
+		"shell_spin": shell_spin,
+		"width": width,
+		"height": height,
+		"supersample": supersample,
+		"albedo": albedo,
+		"metering_key": metering_key,
+	})
+	return {"started": true}
+
+
+## The running capture's result once it has landed, with [code]done[/code] true: what was
+## rendered and its measured fill, clipping and colour. Until then only
+## [code]{"done": false}[/code]; a capture that failed answers its error.
+func poll_icon_capture() -> Dictionary:
 	if _capture_running:
 		return {"done": false}
 	if _capture_result.is_empty():
-		return {"_error": {"code": ERR_INVALID_PARAMS, "message": "No capture has been started"}}
+		return _error(ERR_INVALID_PARAMS, "No capture has been started")
 	var result := _capture_result
 	_capture_result = {}
 	return result
 
 
-func _start_capture(params: Dictionary) -> Variant:
-	if _capture_running:
-		return {"_error": {"code": ERR_NOT_ALLOWED, "message": "A capture is already running"}}
-	var body_name := StringName(str(params.get("body", "")))
-	if !IVBody.bodies.has(body_name):
-		return {"_error": {"code": ERR_BODY_NOT_FOUND, "message": "No body %s" % body_name}}
-	if str(params.get("out_path", "")).is_empty():
-		return {"_error": {"code": ERR_INVALID_PARAMS, "message": "Missing out_path"}}
-	_capture_running = true
-	_capture_result = {}
-	_run_capture(body_name, params)
-	return {"started": true}
+## Frees the capture rig.
+func end_icon_capture() -> Dictionary:
+	_free_rig()
+	return {"freed": true}
 
 
-# The coroutine behind capture_body_icon(). Its caller cannot await it (dispatch is
-# synchronous), so completion is published through _capture_result / _capture_running and
-# collected by poll_icon_capture.
-func _run_capture(body_name: StringName, params: Dictionary) -> void:
-	var out_path := str(params.get("out_path", ""))
-	var width := _read_int(params, "width", IVBody2DCapturer.ICON_SIZE)
-	var height := _read_int(params, "height", IVBody2DCapturer.ICON_SIZE)
-	var supersample := _read_int(params, "supersample", DEFAULT_SUPERSAMPLE)
+# The coroutine behind capture_body_icon(), whose arguments [param spec] holds.
+func _run_capture(body_name: StringName, out_path: String, spec: Dictionary) -> void:
+	var width: int = spec.width
+	var height: int = spec.height
+	var supersample: int = spec.supersample
 	_build_rig(Vector2i(width * supersample, height * supersample))
 	var body: IVBody = IVBody.bodies[body_name]
 	var visual := body.make_body_visual()
@@ -212,29 +266,37 @@ func _run_capture(body_name: StringName, params: Dictionary) -> void:
 		_fail("%s has no model" % body_name)
 		return
 	var aabb := _capturer.stage_visual(visual)
-	_hide_shells_by_tag(body_name, params.get("hide_shell_tags"))
-	_apply_shell_visibility(params.get("shells"))
-	_apply_shell_spin(body_name, params.get("shell_spin"))
+	var hide_shell_tags: Array = spec.hide_shell_tags
+	var shells: Array = spec.shells
+	var shell_spin: float = spec.shell_spin
+	_hide_shells_by_tag(body_name, hide_shell_tags)
+	_apply_shell_visibility(shells)
+	_apply_shell_spin(body_name, shell_spin)
 
-	var albedo := _read_float(params, "albedo", 0.0)
+	var albedo: float = spec.albedo
 	if albedo <= 0.0:
 		albedo = _get_albedo(body)
-	var metering_key := _read_float(params, "metering_key", 0.0)
+	var metering_key: float = spec.metering_key
 	if metering_key <= 0.0:
 		metering_key = _get_metering_key()
-	var brightness := _read_float(params, "brightness", 0.0)
+	var brightness: float = spec.brightness
 	if brightness <= 0.0:
 		brightness = metering_key / albedo
 	_capturer.set_fill_light_enabled(false)
-	var key_azimuth := deg_to_rad(-90.0 + _read_float(params, "light_left", 15.0))
+	var light_left: float = spec.light_left
+	var light_up: float = spec.light_up
+	var key_azimuth := deg_to_rad(-90.0 + light_left)
 	# light_up is where the SOURCE sits relative to the camera axis, so the shine
 	# direction takes the opposite elevation: a source above shines downward.
-	var key_elevation := deg_to_rad(-_read_float(params, "light_up", -10.0))
+	var key_elevation := deg_to_rad(-light_up)
 	_capturer.set_key_light(key_azimuth, key_elevation)
 	_capturer.set_brightness(brightness)
-	_capturer.set_ambient(_read_float(params, "ambient", 0.0))
-	_set_environment_ambient(_read_float(params, "env_ambient", 0.0))
-	_hold_render_globals(_read_float(params, "exposure", 0.0))
+	var ambient: float = spec.ambient
+	var env_ambient: float = spec.env_ambient
+	var exposure: float = spec.exposure
+	_capturer.set_ambient(ambient)
+	_set_environment_ambient(env_ambient)
+	_hold_render_globals(exposure)
 
 	# The turntable's own fit can only bound the unrotated box, and the pose here spins the
 	# body under it (see _apply_pose), so frame on the box's diagonal — a bound no rotation
@@ -253,30 +315,32 @@ func _run_capture(body_name: StringName, params: Dictionary) -> void:
 	var asset_preloader: IVAssetPreloader = IVGlobal.program[&"AssetPreloader"]
 	if asset_preloader.get_body_packed_model(body_name):
 		reference_radius = bound
-	_view_distance = maxf(reference_radius * _read_float(params, "camera_radii",
-			VIEW_ZOOM_RADII), bound * 1.05)
+	var camera_radii: float = spec.camera_radii
+	_view_distance = maxf(reference_radius * camera_radii, bound * 1.05)
 	# The rig replaces the capturer's camera with a perspective one at its own distance, so a
 	# star's disc has to be rescaled to it. Skipping this leaves the photosphere's alias fades
 	# resolving against the staging camera and the Sun renders as a flat disc.
 	visual.set_preview_camera_distance(_view_distance)
 	bound = minf(bound, _view_distance * 0.999)
 	_view_tangent = bound / sqrt(maxf(_view_distance * _view_distance - bound * bound, 1e-12))
-	var longitude := _read_float(params, "longitude", 0.0)
-	var latitude := _read_float(params, "latitude", 0.0)
-	var roll := _read_float(params, "roll", 0.0)
-	var zoom := _read_float(params, "zoom", 1.0)
-	var pan := _parse_pan(params.get("pan"))
+	var longitude: float = spec.longitude
+	var latitude: float = spec.latitude
+	var roll: float = spec.roll
+	var zoom: float = spec.zoom
+	var pan: Vector2 = spec.pan
 	_apply_pose(bounding_cube, longitude, latitude, roll, zoom, pan)
 
-	if _read_bool(params, "auto_roll", false):
+	var auto_roll: bool = spec.auto_roll
+	if auto_roll:
 		roll = await _solve_diagonal_roll(bounding_cube, longitude, latitude, roll, zoom, pan)
 	# The measured fit runs at zoom 1 and the zoom column multiplies its answer, rather than
 	# seeding it: a fit target above 1 can never be measured (the used rect saturates at the
 	# frame), so cropping has to be expressed as a factor on a fit that did converge.
-	var fill := _read_float(params, "fill", 1.0)
+	var fill: float = spec.fill
 	if fill > 0.0:
 		var fitted := await _solve_fill_zoom(bounding_cube, longitude, latitude, roll, 1.0, pan)
-		if _read_bool(params, "auto_center", true):
+		var auto_center: bool = spec.auto_center
+		if auto_center:
 			pan += await _solve_center_pan(bounding_cube, longitude, latitude, roll, fitted, pan)
 		zoom *= fitted * FIT_MEASURE_FILL / fill
 		_apply_pose(bounding_cube, longitude, latitude, roll, zoom, pan)
@@ -291,10 +355,12 @@ func _run_capture(body_name: StringName, params: Dictionary) -> void:
 	# is the WHOLE DISC at the near-zero phase an icon is lit at -- so an icon can need a stop
 	# the app never takes. Its whole job is protecting highlights, though, so under ev_auto a
 	# body that does not clip keeps ev 0 and renders at exactly the app's level.
-	var ev := _read_float(params, "ev", 0.0)
-	if _read_bool(params, "ev_auto", false):
+	var ev: float = spec.ev
+	var ev_auto: bool = spec.ev_auto
+	if ev_auto:
 		var unprotected := await _render()
-		if _measure_clip_fraction(unprotected) <= _read_float(params, "clip_limit", 0.01):
+		var clip_limit: float = spec.clip_limit
+		if _measure_clip_fraction(unprotected) <= clip_limit:
 			ev = 0.0
 	if ev != 0.0:
 		_capturer.set_brightness(brightness * 2.0 ** ev)
@@ -492,10 +558,7 @@ func _measure(image: Image) -> Dictionary:
 
 
 # Hides every shell whose shells.tsv tag is named; nothing by default.
-func _hide_shells_by_tag(body_name: StringName, value: Variant) -> void:
-	var tags: Array = []
-	if typeof(value) == TYPE_ARRAY:
-		tags = value
+func _hide_shells_by_tag(body_name: StringName, tags: Array) -> void:
 	if tags.is_empty():
 		return
 	var asset_preloader: IVAssetPreloader = IVGlobal.program[&"AssetPreloader"]
@@ -520,10 +583,7 @@ func _get_shells() -> Array[IVShellsModel]:
 	return shells
 
 
-func _apply_shell_visibility(value: Variant) -> void:
-	if typeof(value) != TYPE_ARRAY:
-		return
-	var flags: Array = value
+func _apply_shell_visibility(flags: Array) -> void:
 	var shells := _get_shells()
 	for index in mini(flags.size(), shells.size()):
 		shells[index].visible = _to_bool(flags[index], true)
@@ -546,8 +606,8 @@ func _apply_shell_visibility(value: Variant) -> void:
 # Same call as IVShellsModel._rotate, so it inherits that convention exactly: an overlay
 # shell's own basis is a pure scale and its parent carries the body's model basis, which is
 # what makes rotate_y() the body's own polar axis.
-func _apply_shell_spin(body_name: StringName, value: Variant) -> void:
-	var spin := deg_to_rad(_to_float(value, 0.0))
+func _apply_shell_spin(body_name: StringName, spin_deg: float) -> void:
+	var spin := deg_to_rad(spin_deg)
 	var asset_preloader: IVAssetPreloader = IVGlobal.program[&"AssetPreloader"]
 	var specs := asset_preloader.get_body_shell_specs(body_name)
 	var shells := _get_shells()
@@ -589,18 +649,7 @@ func _get_metering_key() -> float:
 	return FALLBACK_METERING_KEY
 
 
-# JSON-RPC hands every number back as a Variant, and an integral one arrives as TYPE_INT
-# however it was written, so each read has to accept both and fall back rather than convert.
-func _to_float(value: Variant, fallback: float) -> float:
-	if typeof(value) == TYPE_FLOAT:
-		var as_float: float = value
-		return as_float
-	if typeof(value) == TYPE_INT:
-		var as_int: int = value
-		return float(as_int)
-	return fallback
-
-
+# A shells flag arrives as JSON gave it: a bool, or written as a number, an int.
 func _to_bool(value: Variant, fallback: bool) -> bool:
 	if typeof(value) == TYPE_BOOL:
 		var as_bool: bool = value
@@ -611,33 +660,16 @@ func _to_bool(value: Variant, fallback: bool) -> bool:
 	return fallback
 
 
-func _read_float(params: Dictionary, key: String, fallback: float) -> float:
-	return _to_float(params.get(key), fallback)
-
-
-func _read_int(params: Dictionary, key: String, fallback: int) -> int:
-	return int(_read_float(params, key, float(fallback)))
-
-
-func _read_bool(params: Dictionary, key: String, fallback: bool) -> bool:
-	return _to_bool(params.get(key), fallback)
-
-
-func _parse_pan(value: Variant) -> Vector2:
-	if typeof(value) != TYPE_ARRAY:
-		return Vector2.ZERO
-	var pan: Array = value
-	if pan.size() != 2:
-		return Vector2.ZERO
-	return Vector2(_to_float(pan[0], 0.0), _to_float(pan[1], 0.0))
-
-
 func _fail(message: String) -> void:
 	if _capturer:
 		_capturer.clear_visual()
 	_release_render_globals()
-	_capture_result = {"_error": {"code": ERR_INVALID_PARAMS, "message": message}}
+	_capture_result = _error(ERR_INVALID_PARAMS, message)
 	_capture_running = false
+
+
+func _error(code: int, message: String) -> Dictionary:
+	return {"_error": {"code": code, "message": message}}
 
 
 # Two awaits, then read back — mirroring IVBody2DCapturer._render_once(): the viewport
@@ -678,7 +710,7 @@ func _build_rig(render_size: Vector2i) -> void:
 	_yaw_pivot.add_child(_pitch_pivot)
 	_spin_pivot = Node3D.new()
 	_pitch_pivot.add_child(_spin_pivot)
-	_server.add_child(_viewport)
+	IVGlobal.get_tree().root.add_child(_viewport)
 	_capturer = IVBody2DCapturer.new()
 	_capturer.bind_nodes(_viewport, _camera, _key_light, _fill_light, _yaw_pivot, _pitch_pivot,
 			_spin_pivot)
