@@ -25,8 +25,9 @@ launched, each body staged through `IVBody.make_body_visual()` into an off-scree
 rig, and the frame read back. Cube shaders, cloud and limb shells, band-pattern
 bodies and packed spacecraft models therefore need no special handling here --
 whatever the app shows is what the icon shows. The in-sim half is
-`body_2d_icon_suite.gd` (same directory), reached over the ivoyager_assistant TCP
-server; this script owns the pose specification, the file naming and the deploy.
+`body_2d_icon_capture.gd` (same directory), whose declared members this script calls
+through the ivoyager_assistant plugin; this script owns the pose specification, the
+file naming and the deploy.
 
 Two conventions make an icon reproducible rather than hand-posed:
 
@@ -135,10 +136,11 @@ sys.path.insert(0, str(ASSISTANT_TOOLS))
 from assistant_test import DEFAULT_PORT, AssistantClient, GodotLauncher  # noqa: E402
 from godot_executable import find_godot_executable                # noqa: E402
 
-SUITE_SCRIPT = "res://addons/tools/body_2d_icon_suite.gd"
-SUITE_KEY = "Body2DIconSuite"
+CAPTURE_SCRIPT = "res://addons/tools/body_2d_icon_capture.gd"
+CAPTURE_ROLE = "Body2DIconCapture"  # its key in the program, which addresses it
+CAPTURE_KEY = "program_refcounteds/" + CAPTURE_ROLE
 OVERRIDE_CFG = PROJECT_DIR / "ivoyager_override2.cfg"
-SUITE_SECTION = "assistant_test_suites"
+OVERRIDE_SECTION = "core_initializer"
 DEFAULT_OUT_DIR = PROJECT_DIR / "addons" / "ivoyager_assets" / "bodies_2d"
 
 # Defaults for every column the specs TSV may omit. The light angle is deliberately
@@ -273,14 +275,15 @@ def spec_to_params(spec, body_name, out_path):
 
 
 # =============================================================================
-# Suite registration
+# Registration
 # =============================================================================
 
-class SuiteRegistration:
-    """Adds the icon suite to ivoyager_override2.cfg for the run, then puts the file
-    back. The assistant server reads suites only from the two override configs, so
-    there is nowhere else to register one; restoring keeps the project repo clean for
-    a tool whose home is this submodule."""
+class CaptureRegistration:
+    """Adds the icon capture to the program through ivoyager_override2.cfg for the
+    run, then puts the file back. A project's program objects are listed only in its
+    initializer and the two override configs, so there is nowhere else to add one from
+    outside; restoring keeps the project repo clean for a tool whose home is this
+    submodule."""
 
     def __init__(self, path):
         self.path = path
@@ -292,11 +295,11 @@ class SuiteRegistration:
         if self.path.exists():
             self._original = self.path.read_text(encoding="utf-8")
             parser.read_string(self._original)
-        if not parser.has_section(SUITE_SECTION):
-            parser.add_section(SUITE_SECTION)
-        if parser.get(SUITE_SECTION, SUITE_KEY, fallback=None) == f'"{SUITE_SCRIPT}"':
+        if not parser.has_section(OVERRIDE_SECTION):
+            parser.add_section(OVERRIDE_SECTION)
+        if parser.get(OVERRIDE_SECTION, CAPTURE_KEY, fallback=None) == f'"{CAPTURE_SCRIPT}"':
             return self
-        parser.set(SUITE_SECTION, SUITE_KEY, f'"{SUITE_SCRIPT}"')
+        parser.set(OVERRIDE_SECTION, CAPTURE_KEY, f'"{CAPTURE_SCRIPT}"')
         with open(self.path, "w", encoding="utf-8") as handle:
             parser.write(handle, space_around_delimiters=False)
         return self
@@ -313,14 +316,14 @@ class SuiteRegistration:
 # Capture
 # =============================================================================
 
-def call_checked(client, method, params=None):
-    response = client.call(method, params)
+def call_checked(client, method, args=None):
+    """Calls the icon capture's declared `method` with the named `args`; returns its
+    result, raising RuntimeError on an error response."""
+    response = client.call("call", {"object": CAPTURE_ROLE, "method": method,
+                                    "args": args or {}})
     if "error" in response:
         raise RuntimeError(f"{method}: {response['error']}")
-    result = response.get("result", {})
-    if isinstance(result, dict) and "_error" in result:
-        raise RuntimeError(f"{method}: {result['_error']}")
-    return result
+    return response.get("result", {})
 
 
 def wait_for_start(client):
@@ -334,7 +337,7 @@ def wait_for_start(client):
         client.invoke("IVStateManager", "start")
     deadline = time.time() + START_TIMEOUT
     while time.time() < deadline:
-        if call_checked(client, "get_project_info").get("ready"):
+        if client.result("get_project_info").get("ready"):
             return
         time.sleep(1.0)
     raise RuntimeError("Simulator did not start")
@@ -395,7 +398,7 @@ def main():
     launcher = None
     failures = []
 
-    with SuiteRegistration(OVERRIDE_CFG):
+    with CaptureRegistration(OVERRIDE_CFG):
         if args.launch:
             godot = args.godot or find_godot_executable(str(PROJECT_DIR), on_message=print)
             if not godot:

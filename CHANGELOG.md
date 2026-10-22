@@ -12,6 +12,7 @@ Under development using Godot 4.7.2.
 ### Changed
 * `horizons_trajectory.py`, `verify_trajectory.py` and `capture_body_icons.py` drive the sim through the members its classes declare (ivoyager_assistant's `describe`, `get` and `call`), and convert by the declared `IVUnits` constants. This fixes trajectory positions and GMs read in meters as kilometers since the Planetarium's `METER` became 1.0.
 * Scripts that launch Godot choose the newest console build of the project's Godot major with ivoyager_assistant's `tools/godot_executable.py` (v0.0.5), and stop rather than run another major; `time_shader_compiles.py` had taken the newest file on disk.
+* [API breaking] `capture_body_icons.py`'s in-sim half is `body_2d_icon_capture.gd` (was `body_2d_icon_suite.gd`), a program object that declares its members, which the script adds for the run and calls through ivoyager_assistant's `call`, now that the Assistant (v0.0.5) has no suites.
 
 
 ## [v0.0.2] - 2026-10-15
