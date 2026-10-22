@@ -133,7 +133,7 @@ PROJECT_DIR = project_dir()
 ASSISTANT_TOOLS = PROJECT_DIR / "addons" / "ivoyager_assistant" / "tools"
 sys.path.insert(0, str(ASSISTANT_TOOLS))
 from assistant_test import DEFAULT_PORT, AssistantClient, GodotLauncher  # noqa: E402
-from orbit_accuracy_test import find_godot_executable              # noqa: E402
+from godot_executable import find_godot_executable                # noqa: E402
 
 SUITE_SCRIPT = "res://addons/tools/body_2d_icon_suite.gd"
 SUITE_KEY = "Body2DIconSuite"
@@ -324,12 +324,17 @@ def call_checked(client, method, params=None):
 
 
 def wait_for_start(client):
-    info = call_checked(client, "get_project_info")
-    if info.get("wait_for_start") and not info.get("started"):
-        call_checked(client, "start_game")
+    started = client.get("IVStateManager", "started")["started"]
+    if client.get("IVCoreSettings", "wait_for_start")["wait_for_start"] and not started:
+        deadline = time.time() + START_TIMEOUT
+        while not client.get("IVStateManager", "ok_to_start")["ok_to_start"]:
+            if time.time() > deadline:
+                raise RuntimeError("Simulator never became ready to start")
+            time.sleep(1.0)
+        client.invoke("IVStateManager", "start")
     deadline = time.time() + START_TIMEOUT
     while time.time() < deadline:
-        if call_checked(client, "get_state").get("started"):
+        if call_checked(client, "get_project_info").get("ready"):
             return
         time.sleep(1.0)
     raise RuntimeError("Simulator did not start")
@@ -392,7 +397,9 @@ def main():
 
     with SuiteRegistration(OVERRIDE_CFG):
         if args.launch:
-            godot = args.godot or find_godot_executable(str(PROJECT_DIR))
+            godot = args.godot or find_godot_executable(str(PROJECT_DIR), on_message=print)
+            if not godot:
+                sys.exit("No Godot console executable of the project's major; use --godot PATH")
             print(f"Launching {godot}")
             launcher = GodotLauncher(godot, str(PROJECT_DIR), port=args.port or 0)
             launcher.start()

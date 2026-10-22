@@ -435,8 +435,9 @@ def get_sim_data(gm_bodies, pos_queries, godot, project, refresh=False):
     """Return {'gm': {body: km^3/s^2}, 'pos': {(body, t): (x,y,z) km}}.
 
     Reads the running sim's own body GMs and positions (so cruise endpoints match
-    the flyby endpoints as actually drawn). Cached in SIM_CACHE; only launches
-    Godot for keys not already cached (or all keys when [refresh])."""
+    the flyby endpoints as actually drawn), converted from sim units by the declared
+    IVUnits constants. Cached in SIM_CACHE; only launches Godot for keys not already
+    cached (or all keys when [refresh])."""
     cache = {"gm": {}, "pos": {}}
     if SIM_CACHE.exists() and not refresh:
         cache.update(json.loads(SIM_CACHE.read_text(encoding="utf-8")))
@@ -454,17 +455,20 @@ def get_sim_data(gm_bodies, pos_queries, godot, project, refresh=False):
         try:
             client.connect()
             launcher.check_instance(client)
-            for _ in range(60):
-                if "result" in client.call("list_bodies", {"filter": "all"}):
+            for _ in range(240):
+                if client.result("get_project_info").get("ready"):
                     break
                 time.sleep(1.0)
+            units = client.get("IVUnits", "KM", "SECOND")
+            km, second = units["KM"], units["SECOND"]
             for body in missing_gm:
-                result = client.call("get_body_info", {"name": body})["result"]
-                cache["gm"][body] = result["gravitational_parameter"]
+                gm = client.get({"class": "IVBody", "name": body},
+                                "gravitational_parameter")["gravitational_parameter"]
+                cache["gm"][body] = gm * second * second / (km * km * km)
             for body, seconds in missing_pos:
-                result = client.call("get_body_position",
-                                     {"name": body, "time": seconds})["result"]
-                cache["pos"][_pos_key(body, seconds)] = result["position"]
+                position = client.invoke({"class": "IVBody", "name": body},
+                                         "get_position_vector", time=seconds)
+                cache["pos"][_pos_key(body, seconds)] = [c / km for c in position]
         finally:
             try:
                 client.call("quit", {"force": True})
@@ -722,8 +726,8 @@ def main():
     godot = args.godot
     if args.pre_fix and godot is None:
         sys.path.insert(0, str(ASSISTANT_TOOLS))
-        from orbit_accuracy_test import find_godot_executable
-        godot = find_godot_executable(args.project)
+        from godot_executable import find_godot_executable
+        godot = find_godot_executable(args.project, on_message=print)
         if not godot:
             sys.exit("No Godot console executable found; pass --godot PATH")
 
